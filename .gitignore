@@ -82,3 +82,5 @@ publish/
 # Generated files
 Generated_Code/
 ValidationReport.md
+{Models,Services,Optimizers}/
+{Models,Services,Templates}/
