@@ -1,4 +1,4 @@
-# バグ収束推定ツール (Bug Convergence Tool) Extended Version
+# バグ収束推定ツール (Bug Convergence Tool)
 
 .NET 8で実装されたソフトウェアテスト品質分析のためのコマンドラインツールです。  
 信頼度成長モデル（SRGM）を用いて、バグの収束状況を分析し、リリース判断に役立つ情報を提供します。
