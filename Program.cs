@@ -285,7 +285,7 @@ class Program
         Console.WriteLine();
         Console.WriteLine("┌─────────────────────────────────────────────────────────┐");
         Console.WriteLine("│         バグ収束推定ツール (Bug Convergence Tool)       │");
-        Console.WriteLine("│              信頼度成長モデルによる品質分析              │");
+        Console.WriteLine("│              信頼度成長モデルによる品質分析             │");
         Console.WriteLine("└─────────────────────────────────────────────────────────┘");
         Console.WriteLine();
     }
