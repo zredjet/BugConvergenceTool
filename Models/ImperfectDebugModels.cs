@@ -32,22 +32,22 @@ public class ImperfectDebugExponentialModel : ReliabilityGrowthModelBase
     {
         double maxY = yData.Max();
         return (
-            new[] { maxY, 0.001, 0.0 },
-            new[] { maxY * 5, 1.0, 0.5 }
+            new[] { maxY, 0.001, -0.5 },
+            new[] { maxY * 5, 1.0, 0.99 }
         );
     }
 }
 
 /// <summary>
-/// 不完全デバッグS字型モデル（Yamada型）
+/// 修正S字型不完全デバッグモデル
 /// テスト初期の習熟と不完全デバッグを同時に考慮
 /// </summary>
 public class ImperfectDebugSModel : ReliabilityGrowthModelBase
 {
-    public override string Name => "不完全デバッグS字型";
+    public override string Name => "修正S字型不完全デバッグ";
     public override string Category => "不完全デバッグ";
     public override string Formula => "遅延S字 × 補正項";
-    public override string Description => "Yamada型。習熟効果と不完全デバッグを統合";
+    public override string Description => "S字型基盤の不完全デバッグ統合モデル";
     public override string[] ParameterNames => new[] { "a", "b", "p" };
 
     public override double Calculate(double t, double[] parameters)
@@ -73,8 +73,8 @@ public class ImperfectDebugSModel : ReliabilityGrowthModelBase
     {
         double maxY = yData.Max();
         return (
-            new[] { maxY, 0.001, 0.0 },
-            new[] { maxY * 5, 1.0, 0.5 }
+            new[] { maxY, 0.001, -0.5 },
+            new[] { maxY * 5, 1.0, 0.99 }
         );
     }
 }
@@ -115,8 +115,8 @@ public class GeneralizedImperfectDebugModel : ReliabilityGrowthModelBase
     {
         double maxY = yData.Max();
         return (
-            new[] { maxY, 0.001, 0.5, 0.0 },
-            new[] { maxY * 5, 1.0, 2.0, 0.5 }
+            new[] { maxY, 0.001, 0.5, -0.5 },
+            new[] { maxY * 5, 1.0, 2.0, 0.99 }
         );
     }
 }

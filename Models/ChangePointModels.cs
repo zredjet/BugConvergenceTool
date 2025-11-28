@@ -26,6 +26,16 @@ public class ExponentialChangePointModel : ChangePointModelBase
     public override string Description => "指数型モデルに変化点を導入";
     public override string[] ParameterNames => new[] { "a₁", "b₁", "a₂", "b₂", "τ" };
     
+    /// <summary>
+    /// 漸近的総欠陥数: a₁ + a₂
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double a1 = parameters[0];
+        double a2 = parameters[2];
+        return a1 + a2;
+    }
+    
     public override double Calculate(double t, double[] p)
     {
         double a1 = p[0], b1 = p[1], a2 = p[2], b2 = p[3], tau = p[4];
@@ -75,6 +85,16 @@ public class DelayedSChangePointModel : ChangePointModelBase
     public override string Formula => "m(t) = a₁(1-(1+b₁t)e^(-b₁t)) [t≤τ], m₁(τ)+a₂(...) [t>τ]";
     public override string Description => "遅延S字型に変化点を導入";
     public override string[] ParameterNames => new[] { "a₁", "b₁", "a₂", "b₂", "τ" };
+    
+    /// <summary>
+    /// 漸近的総欠陥数: a₁ + a₂
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double a1 = parameters[0];
+        double a2 = parameters[2];
+        return a1 + a2;
+    }
     
     public override double Calculate(double t, double[] p)
     {
@@ -126,6 +146,20 @@ public class ImperfectDebugChangePointModel : ChangePointModelBase
     public override string Formula => "dm/dt = b(t)(a+αm-m), b変化点で切替";
     public override string Description => "不完全デバッグと変化点を統合";
     public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "α", "τ" };
+    
+    /// <summary>
+    /// 漸近的総欠陥数: α < 1 の場合 a / (1 - α)
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double a = parameters[0];
+        double alpha = parameters[3];
+        
+        if (alpha >= 1.0)
+            alpha = 0.99;
+        
+        return a / (1 - alpha);
+    }
     
     public override double Calculate(double t, double[] p)
     {
@@ -221,6 +255,20 @@ public class MultipleChangePointModel : ChangePointModelBase
             }
             return names.ToArray();
         }
+    }
+    
+    /// <summary>
+    /// 漸近的総欠陥数: 全セグメントのaの合計
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        int numSegments = _numChangePoints + 1;
+        double total = 0;
+        for (int i = 0; i < numSegments; i++)
+        {
+            total += parameters[i * 2]; // a_i
+        }
+        return total;
     }
     
     public override double Calculate(double t, double[] p)

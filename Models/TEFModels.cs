@@ -9,6 +9,11 @@ public abstract class TEFBasedModelBase : ReliabilityGrowthModelBase
 {
     protected readonly ITestEffortFunction _tef;
     
+    /// <summary>
+    /// 実測累積工数データ（設定されている場合、TEFパラメータ推定に使用）
+    /// </summary>
+    public double[]? ObservedEffortData { get; set; }
+    
     protected TEFBasedModelBase(ITestEffortFunction tef)
     {
         _tef = tef;
@@ -30,6 +35,20 @@ public abstract class TEFBasedModelBase : ReliabilityGrowthModelBase
         var tefParams = new double[tefParamCount];
         Array.Copy(allParams, TEFParamStartIndex, tefParams, 0, tefParamCount);
         return tefParams;
+    }
+    
+    /// <summary>
+    /// TEFパラメータの初期値/境界用のデータを取得
+    /// 実測工数データがあればそれを、なければyData（フォールバック）を返す
+    /// </summary>
+    protected double[] GetEffortDataForTEF(double[] yData)
+    {
+        if (ObservedEffortData != null && ObservedEffortData.Length > 0 && ObservedEffortData.Any(e => e > 0))
+        {
+            return ObservedEffortData;
+        }
+        // フォールバック: 工数データがない場合は累積バグ数を代替として使用（疑似TEF動作）
+        return yData;
     }
 }
 
@@ -70,7 +89,8 @@ public class TEFExponentialModel : TEFBasedModelBase
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        var tefInit = _tef.GetInitialParameters(tData, yData);
+        var effortData = GetEffortDataForTEF(yData);
+        var tefInit = _tef.GetInitialParameters(tData, effortData);
         
         var initial = new List<double> { maxY * 1.5, 0.01 };
         initial.AddRange(tefInit);
@@ -80,7 +100,8 @@ public class TEFExponentialModel : TEFBasedModelBase
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        var (tefLower, tefUpper) = _tef.GetBounds(tData, yData);
+        var effortData = GetEffortDataForTEF(yData);
+        var (tefLower, tefUpper) = _tef.GetBounds(tData, effortData);
         
         var lower = new List<double> { maxY, 0.0001 };
         lower.AddRange(tefLower);
@@ -130,7 +151,8 @@ public class TEFDelayedSModel : TEFBasedModelBase
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        var tefInit = _tef.GetInitialParameters(tData, yData);
+        var effortData = GetEffortDataForTEF(yData);
+        var tefInit = _tef.GetInitialParameters(tData, effortData);
         
         var initial = new List<double> { maxY * 1.5, 0.02 };
         initial.AddRange(tefInit);
@@ -140,7 +162,8 @@ public class TEFDelayedSModel : TEFBasedModelBase
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        var (tefLower, tefUpper) = _tef.GetBounds(tData, yData);
+        var effortData = GetEffortDataForTEF(yData);
+        var (tefLower, tefUpper) = _tef.GetBounds(tData, effortData);
         
         var lower = new List<double> { maxY, 0.0001 };
         lower.AddRange(tefLower);
@@ -178,6 +201,20 @@ public class TEFImperfectDebugModel : TEFBasedModelBase
     
     protected override int TEFParamStartIndex => 3;
     
+    /// <summary>
+    /// 漸近的総欠陥数: a / (1 - α)
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double a = parameters[0];
+        double alpha = parameters[2];
+        
+        if (alpha >= 1.0)
+            alpha = 0.99;
+        
+        return a / (1 - alpha);
+    }
+    
     public override double Calculate(double t, double[] parameters)
     {
         double a = parameters[0];
@@ -206,7 +243,8 @@ public class TEFImperfectDebugModel : TEFBasedModelBase
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        var tefInit = _tef.GetInitialParameters(tData, yData);
+        var effortData = GetEffortDataForTEF(yData);
+        var tefInit = _tef.GetInitialParameters(tData, effortData);
         
         var initial = new List<double> { maxY * 1.5, 0.01, 0.1 };
         initial.AddRange(tefInit);
@@ -216,12 +254,13 @@ public class TEFImperfectDebugModel : TEFBasedModelBase
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        var (tefLower, tefUpper) = _tef.GetBounds(tData, yData);
+        var effortData = GetEffortDataForTEF(yData);
+        var (tefLower, tefUpper) = _tef.GetBounds(tData, effortData);
         
-        var lower = new List<double> { maxY, 0.0001, 0.0 };
+        var lower = new List<double> { maxY, 0.0001, -0.5 };
         lower.AddRange(tefLower);
         
-        var upper = new List<double> { maxY * 5, 1.0, 0.5 };
+        var upper = new List<double> { maxY * 5, 1.0, 0.99 };
         upper.AddRange(tefUpper);
         
         return (lower.ToArray(), upper.ToArray());

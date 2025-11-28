@@ -160,6 +160,20 @@ public class ErrorGenerationModel : FaultRemovalEfficiencyModelBase
     public override string Description => "修正時に新欠陥が導入";
     public override string[] ParameterNames => new[] { "a₀", "b", "α" };
     
+    /// <summary>
+    /// 漸近的総欠陥数: a₀ / (1 - α)
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double a0 = parameters[0];
+        double alpha = parameters[2];
+        
+        if (alpha >= 1.0)
+            alpha = 0.99;
+        
+        return a0 / (1 - alpha);
+    }
+    
     public override double CalculateDetected(double t, double[] p)
     {
         double a0 = p[0], b = p[1], alpha = p[2];
@@ -223,6 +237,20 @@ public class FREErrorGenerationModel : FaultRemovalEfficiencyModelBase
     public override string Formula => "m_c = η·m_d, a(t) = a₀ + α·m_d";
     public override string Description => "除去効率と欠陥導入を統合";
     public override string[] ParameterNames => new[] { "a₀", "b", "η", "α" };
+    
+    /// <summary>
+    /// 漸近的総欠陥数: a₀ / (1 - α)
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double a0 = parameters[0];
+        double alpha = parameters[3];
+        
+        if (alpha >= 1.0)
+            alpha = 0.99;
+        
+        return a0 / (1 - alpha);
+    }
     
     public override double CalculateDetected(double t, double[] p)
     {
@@ -333,6 +361,20 @@ public class IntegratedFREModel : FaultRemovalEfficiencyModelBase
     public override string Formula => "FRE + エラー生成 + 変化点";
     public override string Description => "全要素を統合した高度モデル";
     public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "η", "α", "τ" };
+    
+    /// <summary>
+    /// 漸近的総欠陥数: a / (1 - α)
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double a = parameters[0];
+        double alpha = parameters[4];
+        
+        if (alpha >= 1.0)
+            alpha = 0.99;
+        
+        return a / (1 - alpha);
+    }
     
     public override double CalculateDetected(double t, double[] p)
     {

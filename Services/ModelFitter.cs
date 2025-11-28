@@ -13,6 +13,8 @@ public class ModelFitter
     private readonly TestData _testData;
     private readonly double[] _tData;
     private readonly double[] _yData;
+    private readonly double[] _yFixedData;  // 累積修正数データ（FREモデル用）
+    private readonly double[]? _effortData;  // 累積工数データ（TEFモデル用）
     private readonly OptimizerType _optimizerType;
     private readonly bool _verbose;
     
@@ -21,6 +23,12 @@ public class ModelFitter
         _testData = testData;
         _tData = testData.GetTimeData();
         _yData = testData.GetCumulativeBugsFound();
+        _yFixedData = testData.GetCumulativeBugsFixed();
+        
+        // 工数データが存在する場合のみ設定（TEFモデル用）
+        var actualEffort = testData.GetCumulativeActual();
+        _effortData = actualEffort.Any(e => e > 0) ? actualEffort : null;
+        
         _optimizerType = optimizerType;
         _verbose = verbose;
     }
@@ -38,6 +46,12 @@ public class ModelFitter
         
         try
         {
+            // TEFモデルの場合、工数データを設定
+            if (model is TEFBasedModelBase tefModel && _effortData != null)
+            {
+                tefModel.ObservedEffortData = _effortData;
+            }
+            
             // パラメータ推定（グリッドサーチ + 勾配降下法）
             var parameters = EstimateParameters(model);
             
@@ -110,7 +124,17 @@ public class ModelFitter
         var initial = model.GetInitialParameters(_tData, _yData);
         
         // 目的関数（SSE最小化）
-        Func<double[], double> objective = p => model.CalculateSSE(_tData, _yData, p);
+        // FREモデルの場合は発見数SSE + 修正数SSEの合計を最小化
+        Func<double[], double> objective;
+        
+        if (model is FaultRemovalEfficiencyModelBase freModel)
+        {
+            objective = p => CalculateFREObjective(freModel, p);
+        }
+        else
+        {
+            objective = p => model.CalculateSSE(_tData, _yData, p);
+        }
         
         OptimizationResult result;
         
@@ -141,6 +165,31 @@ public class ModelFitter
     }
     
     /// <summary>
+    /// FREモデル用の目的関数（発見数SSE + 修正数SSE）
+    /// </summary>
+    private double CalculateFREObjective(FaultRemovalEfficiencyModelBase model, double[] parameters)
+    {
+        double sseDetected = 0;
+        double sseCorrected = 0;
+        
+        for (int i = 0; i < _tData.Length; i++)
+        {
+            // 発見数の残差
+            double predictedDetected = model.CalculateDetected(_tData[i], parameters);
+            double residualDetected = _yData[i] - predictedDetected;
+            sseDetected += residualDetected * residualDetected;
+            
+            // 修正数の残差
+            double predictedCorrected = model.CalculateCorrected(_tData[i], parameters);
+            double residualCorrected = _yFixedData[i] - predictedCorrected;
+            sseCorrected += residualCorrected * residualCorrected;
+        }
+        
+        // 両方の誤差を合計（重み付けは1:1）
+        return sseDetected + sseCorrected;
+    }
+    
+    /// <summary>
     /// 収束予測を計算
     /// </summary>
     private void CalculateConvergencePredictions(
@@ -148,7 +197,7 @@ public class ModelFitter
         double[] parameters, 
         FittingResult result)
     {
-        double totalBugs = parameters[0]; // パラメータa
+        double totalBugs = model.GetAsymptoticTotalBugs(parameters);
         int currentDay = _testData.DayCount;
         double currentBugs = _yData.Last();
         

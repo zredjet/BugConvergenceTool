@@ -71,6 +71,17 @@ public abstract class ReliabilityGrowthModelBase
     public abstract (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData);
     
     /// <summary>
+    /// 漸近的総欠陥数（t→∞での極限値）を取得
+    /// デフォルト実装は parameters[0] を返す（基本モデル用）
+    /// 派生モデルで適切な極限値を計算する場合はオーバーライドする
+    /// </summary>
+    public virtual double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        // 基本モデルの多くは parameters[0] (a) が総欠陥数
+        return parameters[0];
+    }
+    
+    /// <summary>
     /// 残差二乗和を計算
     /// </summary>
     public double CalculateSSE(double[] tData, double[] yData, double[] parameters)
@@ -116,7 +127,7 @@ public abstract class ReliabilityGrowthModelBase
     /// </summary>
     public double? PredictDayForRatio(double ratio, double[] parameters, int currentDay)
     {
-        double totalBugs = parameters[0]; // パラメータa
+        double totalBugs = GetAsymptoticTotalBugs(parameters);
         double target = totalBugs * ratio;
         double currentValue = Calculate(currentDay, parameters);
         

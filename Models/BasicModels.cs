@@ -125,6 +125,16 @@ public class ModifiedGompertzModel : ReliabilityGrowthModelBase
         double c = parameters[2];
         return a * (c - Math.Exp(-b * t));
     }
+    
+    /// <summary>
+    /// 漸近的総欠陥数: t→∞ で m(t) → a*c
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double a = parameters[0];
+        double c = parameters[2];
+        return a * c;
+    }
 
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
