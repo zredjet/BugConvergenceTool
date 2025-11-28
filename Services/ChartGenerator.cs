@@ -42,6 +42,9 @@ public class ChartGenerator
     {
         var plt = new Plot();
         
+        // プロットのフォントを日本語対応フォントに設定
+        plt.Font.Set("Yu Gothic UI"); // または "Meiryo", "MS Gothic" など
+        
         var days = Enumerable.Range(1, _testData.DayCount).Select(i => (double)i).ToArray();
         var planned = _testData.GetCumulativePlanned();
         var actual = _testData.GetCumulativeActual();
@@ -58,10 +61,13 @@ public class ChartGenerator
         actualPlot.MarkerSize = 5;
         
         plt.Title("テスト消化曲線（バーンダウン）");
+        plt.Axes.Title.Label.FontName = "Yu Gothic UI";
         plt.XLabel("日数");
+        plt.Axes.Bottom.Label.FontName = "Yu Gothic UI";
         plt.YLabel("累積消化数");
+        plt.Axes.Left.Label.FontName = "Yu Gothic UI";
         plt.Legend.IsVisible = true;
-        plt.Legend.Location = Alignment.LowerRight;
+        plt.Legend.Alignment = Alignment.LowerRight;
         
         plt.SavePng(filePath, _width, _height);
     }
@@ -72,6 +78,9 @@ public class ChartGenerator
     public void GenerateBugCumulativeChart(string filePath)
     {
         var plt = new Plot();
+        
+        // プロットのフォントを日本語対応フォントに設定
+        plt.Font.Set("Yu Gothic UI"); // または "Meiryo", "MS Gothic" など
         
         var days = Enumerable.Range(1, _testData.DayCount).Select(i => (double)i).ToArray();
         var found = _testData.GetCumulativeBugsFound();
@@ -93,7 +102,7 @@ public class ChartGenerator
         plt.XLabel("日数");
         plt.YLabel("累積件数");
         plt.Legend.IsVisible = true;
-        plt.Legend.Location = Alignment.LowerRight;
+        plt.Legend.Alignment = Alignment.LowerRight;
         
         plt.SavePng(filePath, _width, _height);
     }
@@ -104,6 +113,9 @@ public class ChartGenerator
     public void GenerateRemainingBugsChart(string filePath)
     {
         var plt = new Plot();
+        
+        // プロットのフォントを日本語対応フォントに設定
+        plt.Font.Set("Yu Gothic UI"); // または "Meiryo", "MS Gothic" など
         
         var days = Enumerable.Range(1, _testData.DayCount).Select(i => (double)i).ToArray();
         var remaining = _testData.GetRemainingBugs();
@@ -118,7 +130,7 @@ public class ChartGenerator
         plt.XLabel("日数");
         plt.YLabel("残存バグ数");
         plt.Legend.IsVisible = true;
-        plt.Legend.Location = Alignment.UpperRight;
+        plt.Legend.Alignment = Alignment.UpperRight;
         
         plt.SavePng(filePath, _width, _height);
     }
@@ -129,6 +141,9 @@ public class ChartGenerator
     public void GenerateBugConvergenceChart(string filePath)
     {
         var plt = new Plot();
+        
+        // プロットのフォントを日本語対応フォントに設定
+        plt.Font.Set("Yu Gothic UI"); // または "Meiryo", "MS Gothic" など
         
         var days = Enumerable.Range(1, _testData.DayCount).Select(i => (double)i).ToArray();
         var found = _testData.GetCumulativeBugsFound();
@@ -157,7 +172,7 @@ public class ChartGenerator
         plt.XLabel("日数");
         plt.YLabel("件数");
         plt.Legend.IsVisible = true;
-        plt.Legend.Location = Alignment.UpperLeft;
+        plt.Legend.Alignment = Alignment.UpperLeft;
         
         plt.SavePng(filePath, _width, _height);
     }
@@ -168,6 +183,9 @@ public class ChartGenerator
     public void GenerateReliabilityGrowthChart(string filePath, FittingResult result)
     {
         var plt = new Plot();
+        
+        // プロットのフォントを日本語対応フォントに設定
+        plt.Font.Set("Yu Gothic UI"); // または "Meiryo", "MS Gothic" など
         
         int n = _testData.DayCount;
         int predDays = (int)(n * 2); // 2倍の期間まで予測
@@ -207,7 +225,7 @@ public class ChartGenerator
         plt.XLabel("日数");
         plt.YLabel("累積バグ数");
         plt.Legend.IsVisible = true;
-        plt.Legend.Location = Alignment.LowerRight;
+        plt.Legend.Alignment = Alignment.LowerRight;
         
         // 注釈
         var annotation = $"R² = {result.R2:F4}\n推定残バグ: {totalBugs - actualBugs.Last():F1}";
