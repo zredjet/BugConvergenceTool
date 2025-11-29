@@ -455,6 +455,114 @@ public static class ChangePointDetector
 }
 
 /// <summary>
+/// PNZ型不完全デバッグ＋変化点モデル（実効時間 u(t) 方式）
+/// m(t) = a * (1 - e^(-u(t))) / (1 + p * e^(-u(t)))
+/// u(t) = b₁*t (t ≤ τ), b₁*τ + b₂*(t-τ) (t > τ)
+/// </summary>
+/// <remarks>
+/// PNZ型をベースに、変化点τで検出率bが変化するモデル。
+/// 「実効テスト時間」u(t)を導入することでm(t)がτ前後で自動的に連続となる。
+/// - b₂ > b₁: テスト強化（変化点以降の収束が加速）
+/// - b₂ &lt; b₁: テスト弱体化（変化点以降の収束が減速）
+/// </remarks>
+public class ImperfectDebugExponentialChangePointModel : ChangePointModelBase
+{
+    public override string Name => "PNZ型+変化点";
+    public override string Category => "変化点+不完全";
+    public override string Formula => "m(t) = a(1-e^(-u(t)))/(1+p·e^(-u(t))), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]";
+    public override string Description => "PNZ型不完全デバッグに検出率変化点を導入（実効時間方式）";
+    public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "p", "τ" };
+
+    /// <summary>
+    /// 漸近的総欠陥数
+    /// t→∞ で u(t)→∞ より m(∞) = a / (1 + p)
+    /// ただし p が負の場合は a に収束
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double a = parameters[0];
+        double p = parameters[3];
+
+        if (p >= 0)
+            return a / (1 + p);
+        else
+            return a; // p < 0 の場合は a が上界
+    }
+
+    public override double Calculate(double t, double[] parameters)
+    {
+        double a = parameters[0];
+        double b1 = parameters[1];
+        double b2 = parameters[2];
+        double p = parameters[3];
+        double tau = parameters[4];
+
+        // 実効テスト時間 u(t) を計算
+        double u;
+        if (t <= tau)
+        {
+            u = b1 * t;
+        }
+        else
+        {
+            u = b1 * tau + b2 * (t - tau);
+        }
+
+        // PNZ型の式: m(t) = a * (1 - e^(-u)) / (1 + p * e^(-u))
+        double expU = Math.Exp(-u);
+        double numerator = a * (1 - expU);
+        double denominator = 1 + p * expU;
+
+        // 分母が0に近い場合の保護
+        if (Math.Abs(denominator) < 1e-10)
+            return a;
+
+        return numerator / denominator;
+    }
+
+    public override double[] GetInitialParameters(double[] tData, double[] yData)
+    {
+        double maxY = yData.Max();
+        int n = tData.Length;
+
+        // 中央時刻を変化点の初期値とする（既存変化点モデルと同じくインデックスベース）
+        double midT = n / 2.0;
+
+        // 初期値: 変化点なしPNZに近い状態からスタート
+        return new[] {
+            maxY * 1.5,  // a: 総欠陥数スケール
+            0.1,         // b₁: 変化点前の検出率
+            0.1,         // b₂: 変化点後の検出率（最初は同じ）
+            0.1,         // p: 不完全デバッグ率
+            midT         // τ: 変化点
+        };
+    }
+
+    public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
+    {
+        double maxY = yData.Max();
+        int n = tData.Length;
+
+        return (
+            new[] {
+                maxY,      // a: 下限は観測最大値
+                1e-8,      // b₁: 正の小さな値
+                1e-8,      // b₂: 正の小さな値
+                -0.5,      // p: 既存実装に合わせる
+                2.0        // τ: 最小インデックス+1
+            },
+            new[] {
+                maxY * 100, // a: 上限は観測最大値の100倍
+                10.0,       // b₁
+                10.0,       // b₂
+                5.0,        // p
+                n - 2.0     // τ: 最大インデックス-2
+            }
+        );
+    }
+}
+
+/// <summary>
 /// 変化点モデルのファクトリ
 /// </summary>
 public static class ChangePointModelFactory
@@ -464,12 +572,22 @@ public static class ChangePointModelFactory
         yield return new ExponentialChangePointModel();
         yield return new DelayedSChangePointModel();
         yield return new ImperfectDebugChangePointModel();
+        yield return new ImperfectDebugExponentialChangePointModel();
         yield return new MultipleChangePointModel(2);
     }
-    
+
     public static IEnumerable<ReliabilityGrowthModelBase> GetBasicChangePointModels()
     {
         yield return new ExponentialChangePointModel();
         yield return new DelayedSChangePointModel();
+    }
+
+    /// <summary>
+    /// 不完全デバッグ＋変化点モデルを取得
+    /// </summary>
+    public static IEnumerable<ReliabilityGrowthModelBase> GetImperfectDebugChangePointModels()
+    {
+        yield return new ImperfectDebugChangePointModel();
+        yield return new ImperfectDebugExponentialChangePointModel();
     }
 }

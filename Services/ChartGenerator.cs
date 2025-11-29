@@ -233,9 +233,16 @@ public class ChartGenerator
         
         plt.SavePng(filePath, _width, _height);
     }
-    
+
     private ReliabilityGrowthModelBase GetModelFromResult(FittingResult result)
     {
-        return ModelFactory.GetAllModels().First(m => m.Name == result.ModelName);
+        // 全拡張モデルから検索
+        var allModels = ModelFactory.GetAllExtendedModels(
+            includeChangePoint: true,
+            includeTEF: true,
+            includeFRE: true,
+            includeCoverage: true);
+        return allModels.FirstOrDefault(m => m.Name == result.ModelName)
+            ?? ModelFactory.GetAllModels().First(m => m.Name == result.ModelName);
     }
 }

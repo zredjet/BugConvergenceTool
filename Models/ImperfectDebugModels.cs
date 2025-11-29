@@ -146,34 +146,42 @@ public static class ModelFactory
     public static IEnumerable<ReliabilityGrowthModelBase> GetAllExtendedModels(
         bool includeChangePoint = true,
         bool includeTEF = true,
-        bool includeFRE = true)
+        bool includeFRE = true,
+        bool includeCoverage = true)
     {
         // 基本モデル
         foreach (var m in GetBasicModels())
             yield return m;
-        
+
         // 不完全デバッグモデル
         foreach (var m in GetImperfectDebugModels())
             yield return m;
-        
+
         // 変化点モデル
         if (includeChangePoint)
         {
             foreach (var m in ChangePointModelFactory.GetBasicChangePointModels())
                 yield return m;
         }
-        
+
         // TEF組込モデル（推奨のWeibull TEFのみ）
         if (includeTEF)
         {
             foreach (var m in TEFModelFactory.GetRecommendedTEFModels())
                 yield return m;
         }
-        
+
         // 欠陥除去効率モデル
         if (includeFRE)
         {
             foreach (var m in FREModelFactory.GetBasicFREModels())
+                yield return m;
+        }
+
+        // Coverage モデル
+        if (includeCoverage)
+        {
+            foreach (var m in CoverageModelFactory.GetRecommendedCoverageModels())
                 yield return m;
         }
     }
@@ -210,6 +218,7 @@ public static class ModelFactory
         yield return "変化点";
         yield return "TEF組込";
         yield return "欠陥除去効率";
+        yield return "Coverage";
         yield return "統合";
     }
 }

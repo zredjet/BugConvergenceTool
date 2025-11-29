@@ -203,9 +203,15 @@ public class ExcelWriter
         ws.Range(1, 1, 1, 5).Style.Font.Bold = true;
         ws.Range(1, 1, 1, 5).Style.Fill.BackgroundColor = XLColor.FromHtml("#4472C4");
         ws.Range(1, 1, 1, 5).Style.Font.FontColor = XLColor.White;
-        
-        // モデル取得
-        var model = ModelFactory.GetAllModels().First(m => m.Name == bestResult.ModelName);
+
+        // モデル取得（全拡張モデルから検索）
+        var allModels = ModelFactory.GetAllExtendedModels(
+            includeChangePoint: true,
+            includeTEF: true,
+            includeFRE: true,
+            includeCoverage: true);
+        var model = allModels.FirstOrDefault(m => m.Name == bestResult.ModelName)
+            ?? ModelFactory.GetAllModels().First(m => m.Name == bestResult.ModelName);
         var parameters = bestResult.Parameters.Values.ToArray();
         var actualBugs = _testData.GetCumulativeBugsFound();
         

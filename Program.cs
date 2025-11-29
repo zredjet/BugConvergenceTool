@@ -60,6 +60,7 @@ class Program
         if (options.IncludeChangePoint) modelTypes.Add("変化点");
         if (options.IncludeTEF) modelTypes.Add("TEF組込");
         if (options.IncludeFRE) modelTypes.Add("FRE");
+        if (options.IncludeCoverage) modelTypes.Add("Coverage");
         Console.WriteLine($"モデル: {string.Join(", ", modelTypes)}");
         Console.WriteLine();
         
@@ -68,13 +69,14 @@ class Program
         var fitter = new ModelFitter(testData, options.Optimizer, options.Verbose);
         
         List<FittingResult> results;
-        if (options.AllExtended || options.IncludeChangePoint || options.IncludeTEF || options.IncludeFRE)
+        if (options.AllExtended || options.IncludeChangePoint || options.IncludeTEF || options.IncludeFRE || options.IncludeCoverage)
         {
             // 拡張モデルを使用
             var models = ModelFactory.GetAllExtendedModels(
                 options.IncludeChangePoint,
                 options.IncludeTEF,
-                options.IncludeFRE);
+                options.IncludeFRE,
+                options.IncludeCoverage);
             results = models.Select(m => fitter.FitModel(m)).ToList();
         }
         else
@@ -264,12 +266,17 @@ class Program
                 case "--fre":
                     options.IncludeFRE = true;
                     break;
-                    
+
+                case "--coverage":
+                    options.IncludeCoverage = true;
+                    break;
+
                 case "--all-extended":
                     options.AllExtended = true;
                     options.IncludeChangePoint = true;
                     options.IncludeTEF = true;
                     options.IncludeFRE = true;
+                    options.IncludeCoverage = true;
                     break;
                     
                 default:
@@ -316,6 +323,7 @@ class Program
         Console.WriteLine("  --change-point        変化点モデルを含める");
         Console.WriteLine("  --tef                 テスト工数関数モデルを含める");
         Console.WriteLine("  --fre                 欠陥除去効率モデルを含める");
+        Console.WriteLine("  --coverage            Coverageモデルを含める");
         Console.WriteLine("  --all-extended        全拡張モデルを含める");
         Console.WriteLine();
         Console.WriteLine("使用例:");
@@ -351,5 +359,6 @@ class CommandOptions
     public bool IncludeChangePoint { get; set; } = false;
     public bool IncludeTEF { get; set; } = false;
     public bool IncludeFRE { get; set; } = false;
+    public bool IncludeCoverage { get; set; } = false;
     public bool AllExtended { get; set; } = false;
 }
