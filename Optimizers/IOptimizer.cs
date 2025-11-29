@@ -112,6 +112,11 @@ public enum OptimizerType
     NelderMead,
     
     /// <summary>
+    /// CMA-ES（共分散行列適応進化戦略）
+    /// </summary>
+    CMAES,
+    
+    /// <summary>
     /// 全アルゴリズムで比較し最良を選択
     /// </summary>
     AutoSelect

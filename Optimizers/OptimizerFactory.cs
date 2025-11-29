@@ -17,6 +17,7 @@ public static class OptimizerFactory
             OptimizerType.DifferentialEvolution => new DEOptimizer(),
             OptimizerType.GWO => new GWOOptimizer(),
             OptimizerType.NelderMead => new NelderMeadOptimizer(),
+            OptimizerType.CMAES => new CMAESOptimizer(),
             _ => new DEOptimizer() // デフォルトはDE
         };
     }
@@ -31,6 +32,7 @@ public static class OptimizerFactory
         yield return new DEOptimizer();
         yield return new GWOOptimizer();
         yield return new NelderMeadOptimizer();
+        yield return new CMAESOptimizer();
     }
     
     /// <summary>
@@ -41,6 +43,7 @@ public static class OptimizerFactory
         yield return new PSOOptimizer();
         yield return new DEOptimizer();
         yield return new GWOOptimizer();
+        yield return new CMAESOptimizer();
     }
     
     /// <summary>
