@@ -149,10 +149,58 @@ public sealed class SseLossFunction : ILossFunction
         {
             var effortData = tefModel.ObservedEffortData;
             int len = Math.Min(tData.Length, effortData.Length);
-            
-            // 工数データのスケール調整用重み（バグ数と工数のスケール差を補正）
-            // 簡易的に 1.0 とするが、必要に応じて調整可能
-            double weight = 1.0;
+
+            // --- スケーリングの導入 ---
+            // バグ数と工数でスケールが大きく異なる場合、工数SSEが支配的にならないよう、
+            // 各系列の分散で正規化した上で重み付けを行う簡易的な手法を用いる。
+
+            // バグ数系列の分散（0の場合は1にフォールバック）
+            double meanBugs = 0.0;
+            for (int i = 0; i < tData.Length; i++)
+            {
+                meanBugs += yData[i];
+            }
+            meanBugs /= Math.Max(1, tData.Length);
+
+            double varBugs = 0.0;
+            for (int i = 0; i < tData.Length; i++)
+            {
+                double diff = yData[i] - meanBugs;
+                varBugs += diff * diff;
+            }
+            varBugs /= Math.Max(1, tData.Length);
+            if (varBugs <= 0) varBugs = 1.0;
+
+            // 工数系列の分散（0の場合は1にフォールバック）
+            double meanEffort = 0.0;
+            int effortCount = 0;
+            for (int i = 0; i < len; i++)
+            {
+                if (effortData[i] <= 0) continue;
+                meanEffort += effortData[i];
+                effortCount++;
+            }
+            if (effortCount > 0)
+            {
+                meanEffort /= effortCount;
+            }
+
+            double varEffort = 0.0;
+            if (effortCount > 0)
+            {
+                for (int i = 0; i < len; i++)
+                {
+                    if (effortData[i] <= 0) continue;
+                    double diff = effortData[i] - meanEffort;
+                    varEffort += diff * diff;
+                }
+                varEffort /= effortCount;
+            }
+            if (varEffort <= 0) varEffort = 1.0;
+
+            // 工数SSEに掛ける重み: バグ系列と同程度のスケールになるように調整
+            // weightEffort ≈ varBugs / varEffort
+            double weightEffort = varBugs / varEffort;
 
             for (int i = 0; i < len; i++)
             {
@@ -161,7 +209,7 @@ public sealed class SseLossFunction : ILossFunction
 
                 double predictedEffort = tefModel.CalculateEffort(tData[i], parameters);
                 double residual = effortData[i] - predictedEffort;
-                sse += residual * residual * weight;
+                sse += residual * residual * weightEffort;
             }
         }
         
