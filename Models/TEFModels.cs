@@ -36,6 +36,15 @@ public abstract class TEFBasedModelBase : ReliabilityGrowthModelBase
         Array.Copy(allParams, TEFParamStartIndex, tefParams, 0, tefParamCount);
         return tefParams;
     }
+
+    /// <summary>
+    /// 時刻 t における累積工数 W(t) を計算
+    /// </summary>
+    public double CalculateEffort(double t, double[] parameters)
+    {
+        var tefParams = GetTEFParams(parameters);
+        return _tef.CalculateW(t, tefParams);
+    }
     
     /// <summary>
     /// TEFパラメータの初期値/境界用のデータを取得

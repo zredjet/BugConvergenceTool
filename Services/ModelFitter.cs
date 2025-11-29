@@ -71,9 +71,22 @@ public class ModelFitter
         try
         {
             // TEFモデルの場合、工数データを設定
-            if (model is TEFBasedModelBase tefModel && _effortData != null)
+            if (model is TEFBasedModelBase tefModel)
             {
-                tefModel.ObservedEffortData = _effortData;
+                if (_effortData != null)
+                {
+                    tefModel.ObservedEffortData = _effortData;
+                }
+                else
+                {
+                    result.Warnings.Add("警告: TEFモデルが選択されましたが、工数データ（予定/実績）がありません。パラメータ推定の精度が低下する可能性があります。");
+                }
+            }
+
+            // FREモデルの場合、修正データを確認
+            if (model is FaultRemovalEfficiencyModelBase && (_yFixedData == null || _yFixedData.All(v => v == 0)))
+            {
+                result.Warnings.Add("警告: FREモデルが選択されましたが、修正データ（BugsFixed）がありません。修正効率パラメータが正しく推定されません。");
             }
             
             // 損失関数の取得（MLEサポートチェック付き）

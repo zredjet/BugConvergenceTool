@@ -143,6 +143,27 @@ public sealed class SseLossFunction : ILossFunction
                 sse += residual * residual;
             }
         }
+
+        // TEFモデルの場合、工数データのSSEも追加（工数曲線のフィッティング）
+        if (model is TEFBasedModelBase tefModel && tefModel.ObservedEffortData != null)
+        {
+            var effortData = tefModel.ObservedEffortData;
+            int len = Math.Min(tData.Length, effortData.Length);
+            
+            // 工数データのスケール調整用重み（バグ数と工数のスケール差を補正）
+            // 簡易的に 1.0 とするが、必要に応じて調整可能
+            double weight = 1.0;
+
+            for (int i = 0; i < len; i++)
+            {
+                // 工数データが0の場合はスキップ（未入力とみなす）
+                if (effortData[i] <= 0) continue;
+
+                double predictedEffort = tefModel.CalculateEffort(tData[i], parameters);
+                double residual = effortData[i] - predictedEffort;
+                sse += residual * residual * weight;
+            }
+        }
         
         return sse;
     }
@@ -189,6 +210,21 @@ public sealed class SseLossFunction : ILossFunction
                 sseCorrected += residual * residual;
             }
             
+            // TEFモデルの工数SSEも考慮（もしあれば）
+            double sseEffort = 0;
+            if (model is TEFBasedModelBase tefModel && tefModel.ObservedEffortData != null)
+            {
+                var effortData = tefModel.ObservedEffortData;
+                int len = Math.Min(n, effortData.Length);
+                for (int i = 0; i < len; i++)
+                {
+                    if (effortData[i] <= 0) continue;
+                    double predictedEffort = tefModel.CalculateEffort(tData[i], parameters);
+                    double residual = effortData[i] - predictedEffort;
+                    sseEffort += residual * residual;
+                }
+            }
+            
             if (sseDetected <= 0 || sseCorrected <= 0 || n == 0) 
                 return double.NegativeInfinity;
             
@@ -199,12 +235,19 @@ public sealed class SseLossFunction : ILossFunction
             double logLD = -n / 2.0 * (Math.Log(2 * Math.PI) + Math.Log(sigma2D) + 1);
             double logLC = -n / 2.0 * (Math.Log(2 * Math.PI) + Math.Log(sigma2C) + 1);
             
-            return logLD + logLC;
+            double logLE = 0;
+            if (sseEffort > 0)
+            {
+                double sigma2E = sseEffort / n;
+                logLE = -n / 2.0 * (Math.Log(2 * Math.PI) + Math.Log(sigma2E) + 1);
+            }
+            
+            return logLD + logLC + logLE;
         }
         
         // 通常モデル
         int nPoints = tData.Length;
-        double sse = Evaluate(tData, yData, model, parameters);
+        double sse = Evaluate(tData, yData, model, parameters); // Evaluate now includes TEF effort SSE
         
         if (sse <= 0 || nPoints == 0) return double.NegativeInfinity;
         
@@ -337,12 +380,62 @@ public sealed class MleLossFunction : ILossFunction
         if (model is FaultRemovalEfficiencyModelBase freModel && yFixedData != null)
         {
             double logLCorrected = CalculateCorrectedLogLikelihood(tData, yFixedData, freModel, parameters);
-            return logLDetected + logLCorrected;
+            
+            // TEFモデルの工数尤度も考慮（もしあれば）
+            double logLEffort = 0;
+            if (model is TEFBasedModelBase tefModel && tefModel.ObservedEffortData != null)
+            {
+                logLEffort = CalculateEffortLogLikelihood(tData, tefModel, parameters);
+            }
+            
+            return logLDetected + logLCorrected + logLEffort;
+        }
+        
+        // TEFモデルの工数尤度も考慮（通常モデルの場合）
+        if (model is TEFBasedModelBase tefModel2 && tefModel2.ObservedEffortData != null)
+        {
+            double logLEffort = CalculateEffortLogLikelihood(tData, tefModel2, parameters);
+            return logLDetected + logLEffort;
         }
         
         return logLDetected;
     }
     
+    /// <summary>
+    /// 工数の対数尤度を計算（TEFモデル用、正規分布仮定）
+    /// </summary>
+    private double CalculateEffortLogLikelihood(
+        double[] tData, 
+        TEFBasedModelBase model, 
+        double[] parameters)
+    {
+        var effortData = model.ObservedEffortData;
+        if (effortData == null) return 0;
+        
+        int n = Math.Min(tData.Length, effortData.Length);
+        double sse = 0;
+        int count = 0;
+        
+        for (int i = 0; i < n; i++)
+        {
+            if (effortData[i] <= 0) continue;
+            
+            double predicted = model.CalculateEffort(tData[i], parameters);
+            double residual = effortData[i] - predicted;
+            sse += residual * residual;
+            count++;
+        }
+        
+        if (sse <= 0 || count == 0) return 0; // 完全一致またはデータなし
+        
+        // 正規分布の対数尤度: -n/2 * ln(2πσ²) - SSE/(2σ²)
+        // 最尤推定では σ² = SSE/n となるため
+        // ln(L) = -n/2 * (ln(2π) + ln(SSE/n) + 1)
+        
+        double sigma2 = sse / count;
+        return -count / 2.0 * (Math.Log(2 * Math.PI) + Math.Log(sigma2) + 1);
+    }
+
     /// <summary>
     /// 発見数の対数尤度を計算
     /// </summary>
