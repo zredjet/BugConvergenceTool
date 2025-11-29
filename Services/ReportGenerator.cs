@@ -124,14 +124,21 @@ public class ReportGenerator
         sb.AppendLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {PadLeftByWidth("R²", colNum)} {PadLeftByWidth("MSE", colNum)} {PadLeftByWidth("AIC", colNum)} {PadLeftByWidth("潜在バグ", colNum)}");
         sb.AppendLine(new string('-', 92));
         
-        foreach (var result in results.Where(r => r.Success).OrderBy(r => r.AIC))
+        foreach (var result in results.Where(r => r.Success && !r.ModelSelectionCriterion.StartsWith("Invalid")).OrderBy(r => r.SelectionScore))
         {
             string marker = result.ModelName == bestResult.ModelName ? " *" : "";
             string modelNameWithMarker = result.ModelName + marker;
             sb.AppendLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.MSE,colNum:F2} {result.AIC,colNum:F2} {result.EstimatedTotalBugs,colNum:F1}");
         }
         sb.AppendLine();
-        sb.AppendLine("  * = 推奨モデル（AIC最小）");
+        var criterion = bestResult.ModelSelectionCriterion;
+        sb.AppendLine($"  * = 推奨モデル（{criterion}最小）");
+        if (criterion == "AICc")
+        {
+            int n = _testData.DayCount;
+            int k = bestResult.ParameterVector.Length;
+            sb.AppendLine($"      （小標本補正適用: n={n}, k={k}, n/k={n/(double)k:F1} < 40）");
+        }
         sb.AppendLine();
         
         // 推奨モデルの詳細
@@ -163,6 +170,8 @@ public class ReportGenerator
         sb.AppendLine($"    決定係数 (R²):       {bestResult.R2:F4}");
         sb.AppendLine($"    平均二乗誤差 (MSE):  {bestResult.MSE:F2}");
         sb.AppendLine($"    AIC:                 {bestResult.AIC:F2}");
+        sb.AppendLine($"    AICc:                {bestResult.AICc:F2}");
+        sb.AppendLine($"    選択基準:            {bestResult.ModelSelectionCriterion} = {bestResult.SelectionScore:F2}");
         sb.AppendLine();
         
         // 推定結果

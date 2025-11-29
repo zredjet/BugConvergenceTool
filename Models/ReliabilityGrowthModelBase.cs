@@ -13,6 +13,25 @@ public class FittingResult
     public double R2 { get; set; }
     public double MSE { get; set; }
     public double AIC { get; set; }
+    
+    /// <summary>
+    /// AICc（小標本補正AIC）
+    /// Burnham & Anderson (2002) の基準: AICc = AIC + 2k(k+1)/(n-k-1)
+    /// </summary>
+    public double AICc { get; set; }
+    
+    /// <summary>
+    /// モデル選択に使用された評価基準 ("AIC", "AICc", または "Invalid")
+    /// n/k < 40 の場合は AICc を使用（Burnham & Anderson の基準）
+    /// </summary>
+    public string ModelSelectionCriterion { get; set; } = "AIC";
+    
+    /// <summary>
+    /// モデル選択スコア（ソート用）
+    /// ModelSelectionCriterion に応じて AIC または AICc の値を返す
+    /// </summary>
+    public double SelectionScore => ModelSelectionCriterion == "AICc" ? AICc : AIC;
+    
     public double[] PredictedValues { get; set; } = Array.Empty<double>();
     public bool Success { get; set; }
     public string? ErrorMessage { get; set; }

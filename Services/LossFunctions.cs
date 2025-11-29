@@ -87,6 +87,24 @@ public interface ILossFunction
         ReliabilityGrowthModelBase model, 
         double[] parameters,
         double[]? yFixedData = null);
+    
+    /// <summary>
+    /// AICc（小標本補正AIC）を計算
+    /// Burnham & Anderson (2002) に基づく補正: AICc = AIC + 2k(k+1)/(n-k-1)
+    /// n/k < 40 の場合に推奨。n が小さく k が大きいモデルへの過学習ペナルティを強化。
+    /// </summary>
+    /// <param name="tData">時間データ（日数）</param>
+    /// <param name="yData">累積バグ発見数データ</param>
+    /// <param name="model">信頼度成長モデル</param>
+    /// <param name="parameters">モデルパラメータ</param>
+    /// <param name="yFixedData">累積バグ修正数データ（FREモデル用、オプション）</param>
+    /// <returns>AICc値（n <= k+1 の場合は double.MaxValue）</returns>
+    double CalculateAICc(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null);
 }
 
 /// <summary>
@@ -226,6 +244,41 @@ public sealed class SseLossFunction : ILossFunction
         if (sse <= 0) return double.MaxValue;
         
         return n * Math.Log(sse / n) + 2 * k;
+    }
+    
+    /// <summary>
+    /// SSEベースのAICc計算（小標本補正付きAIC）
+    /// AICc = AIC + 2k(k+1)/(n-k-1)
+    /// Burnham & Anderson (2002) の基準に基づく
+    /// </summary>
+    public double CalculateAICc(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null)
+    {
+        // 1. 通常の AIC を計算
+        double aic = CalculateAIC(tData, yData, model, parameters, yFixedData);
+        
+        // AIC が計算不能ならそのまま返す
+        if (aic >= double.MaxValue || double.IsInfinity(aic) || double.IsNaN(aic))
+            return aic;
+
+        int n = tData.Length;
+        int k = parameters.Length;
+
+        // 2. 補正項の分母チェック (n <= k + 1 の場合は計算不能)
+        double denominator = n - k - 1.0;
+        if (denominator <= 0) 
+        {
+            // サンプルサイズ不足でモデルとして不適
+            return double.MaxValue;
+        }
+
+        // 3. AICc = AIC + (2k(k+1) / (n-k-1))
+        double correction = (2.0 * k * (k + 1.0)) / denominator;
+        return aic + correction;
     }
 }
 
@@ -376,6 +429,41 @@ public sealed class MleLossFunction : ILossFunction
         
         // AIC = 2k - 2ln(L)
         return 2 * k - 2 * logL;
+    }
+    
+    /// <summary>
+    /// Poisson-NHPPベースのAICc計算（小標本補正付きAIC）
+    /// AICc = AIC + 2k(k+1)/(n-k-1)
+    /// Burnham & Anderson (2002) の基準に基づく
+    /// </summary>
+    public double CalculateAICc(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null)
+    {
+        // 1. 通常の AIC を計算
+        double aic = CalculateAIC(tData, yData, model, parameters, yFixedData);
+        
+        // AIC が計算不能ならそのまま返す
+        if (aic >= double.MaxValue || double.IsInfinity(aic) || double.IsNaN(aic))
+            return aic;
+
+        int n = tData.Length;
+        int k = parameters.Length;
+
+        // 2. 補正項の分母チェック (n <= k + 1 の場合は計算不能)
+        double denominator = n - k - 1.0;
+        if (denominator <= 0) 
+        {
+            // サンプルサイズ不足でモデルとして不適
+            return double.MaxValue;
+        }
+
+        // 3. AICc = AIC + (2k(k+1) / (n-k-1))
+        double correction = (2.0 * k * (k + 1.0)) / denominator;
+        return aic + correction;
     }
     
     /// <summary>

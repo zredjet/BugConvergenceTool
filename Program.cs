@@ -176,7 +176,7 @@ class Program
         }
         
         // 3. 結果表示
-        PrintResults(results, bestResult, options.Verbose);
+        PrintResults(results, bestResult, testData, options.Verbose);
         
         // 3.5. 警告メッセージの生成と表示
         var warnings = WarningService.GenerateAllWarnings(
@@ -273,7 +273,7 @@ class Program
         return padding > 0 ? new string(' ', padding) + s : s;
     }
     
-    static void PrintResults(List<FittingResult> results, FittingResult bestResult, bool verbose = false)
+    static void PrintResults(List<FittingResult> results, FittingResult bestResult, TestData testData, bool verbose = false)
     {
         Console.WriteLine("\n=== モデル比較結果 ===\n");
         
@@ -303,7 +303,7 @@ class Program
             Console.WriteLine(new string('-', verbose ? 93 : 80));
         }
         
-        foreach (var result in results.Where(r => r.Success).OrderBy(r => r.AIC))
+        foreach (var result in results.Where(r => r.Success && !r.ModelSelectionCriterion.StartsWith("Invalid")).OrderBy(r => r.SelectionScore))
         {
             bool isBest = result.ModelName == bestResult.ModelName;
             
@@ -334,7 +334,15 @@ class Program
             Console.ResetColor();
         }
         
-        Console.WriteLine("\n* = 推奨モデル（AIC最小）");
+        // 使用された評価基準を表示
+        var criterion = bestResult.ModelSelectionCriterion;
+        Console.WriteLine($"\n* = 推奨モデル（{criterion}最小）");
+        if (criterion == "AICc")
+        {
+            int n = testData.DayCount;
+            int k = bestResult.ParameterVector.Length;
+            Console.WriteLine($"  （小標本補正適用: n={n}, k={k}, n/k={n/(double)k:F1} < 40）");
+        }
         
         // ホールドアウト検証サマリー
         if (hasHoldout)

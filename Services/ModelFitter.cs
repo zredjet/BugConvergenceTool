@@ -130,6 +130,32 @@ public class ModelFitter
             // FREモデルの場合は発見+修正の結合尤度を使用
             result.AIC = lossFunction.CalculateAIC(_tData, _yData, model, parameters, _yFixedData);
             
+            // AICc（小標本補正AIC）を計算
+            result.AICc = lossFunction.CalculateAICc(_tData, _yData, model, parameters, _yFixedData);
+            
+            // 【自動判定ロジック】Burnham & Anderson (2002) の基準
+            int n = _tData.Length;
+            int k = parameters.Length;
+            
+            if (n <= k + 1)
+            {
+                // サンプルサイズ不足で AICc 計算不能 → モデルとして評価不適
+                result.ModelSelectionCriterion = "Invalid (n <= k+1)";
+                result.Warnings.Add($"警告: サンプルサイズ不足 (n={n}, k={k})。このモデルは評価に適していません。");
+            }
+            else if ((double)n / k < 40.0)
+            {
+                // n/k < 40 の場合、小標本補正が必要 → AICc を採用
+                result.ModelSelectionCriterion = "AICc";
+            }
+            else
+            {
+                // 十分なサンプルサイズがある場合
+                // 注: Burnham & Anderson は「常に AICc を使用しても良い」としているが、
+                // ここでは切り替えロジックを明示するため AIC を選択
+                result.ModelSelectionCriterion = "AIC";
+            }
+            
             // ホールドアウト検証
             if (_splitResult != null && _splitResult.IsValid)
             {
@@ -189,7 +215,8 @@ public class ModelFitter
     }
     
     /// <summary>
-    /// 最適モデル（AIC最小）を取得
+    /// 最適モデル（SelectionScore最小）を取得
+    /// SelectionScore は n/k < 40 の場合 AICc、それ以外は AIC
     /// </summary>
     public FittingResult? GetBestModel(List<FittingResult> results, string? category = null)
     {
@@ -198,7 +225,11 @@ public class ModelFitter
         if (category != null)
             filtered = filtered.Where(r => r.Category == category);
         
-        return filtered.OrderBy(r => r.AIC).FirstOrDefault();
+        // Invalid なモデルを除外し、SelectionScore でソート
+        return filtered
+            .Where(r => !r.ModelSelectionCriterion.StartsWith("Invalid"))
+            .OrderBy(r => r.SelectionScore)
+            .FirstOrDefault();
     }
     
     /// <summary>

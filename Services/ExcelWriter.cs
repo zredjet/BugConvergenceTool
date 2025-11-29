@@ -113,7 +113,7 @@ public class ExcelWriter
         
         // データ
         int row = startRow + 2;
-        foreach (var result in results.Where(r => r.Success).OrderBy(r => r.AIC))
+        foreach (var result in results.Where(r => r.Success && !r.ModelSelectionCriterion.StartsWith("Invalid")).OrderBy(r => r.SelectionScore))
         {
             int col = 1;
             ws.Cell(row, col++).Value = result.ModelName;
