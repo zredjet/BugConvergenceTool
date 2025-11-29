@@ -47,7 +47,19 @@ public enum ResidualType
     /// 累積バグ数の観測値とモデル予測値の差
     /// 注意: 累積データは自己相関を持つため、独立性検定（ラン検定等）の解釈に注意
     /// </summary>
-    Cumulative
+    Cumulative,
+    
+    /// <summary>
+    /// Anscombe残差（Poisson用）: 分散安定化変換に基づく残差
+    /// 正規性仮定により近い分布を持つ
+    /// </summary>
+    Anscombe,
+    
+    /// <summary>
+    /// 標準化Pearson残差: Pearson残差をハット行列の対角成分で調整
+    /// レバレッジの影響を考慮
+    /// </summary>
+    StandardizedPearson
 }
 
 /// <summary>
@@ -87,6 +99,9 @@ public class ResidualAnalysisResult
     
     /// <summary>サンプルサイズが小さい場合の警告</summary>
     public string? SmallSampleWarning { get; init; }
+    
+    /// <summary>Poisson過分散検定結果（Poisson残差の場合のみ）</summary>
+    public OverdispersionTestResult? OverdispersionTest { get; init; }
 }
 
 /// <summary>
@@ -111,6 +126,104 @@ public class RunsTestResult
     
     /// <summary>負の残差の数</summary>
     public int NegativeCount { get; init; }
+}
+
+/// <summary>
+/// 過分散検定の結果
+/// </summary>
+/// <remarks>
+/// Poisson分布では分散=平均（等分散性）が成立する。
+/// 実データでは分散>平均（過分散）となることが多く、
+/// これはPoisson仮定の逸脱を示唆する。
+/// </remarks>
+public class OverdispersionTestResult
+{
+    /// <summary>過分散パラメータ φ = Var(y) / E(y)</summary>
+    public double DispersionParameter { get; init; }
+    
+    /// <summary>Pearsonχ²統計量 = Σ(y-λ)²/λ</summary>
+    public double PearsonChiSquare { get; init; }
+    
+    /// <summary>自由度</summary>
+    public int DegreesOfFreedom { get; init; }
+    
+    /// <summary>過分散検定のp値</summary>
+    public double PValue { get; init; }
+    
+    /// <summary>過分散が検出されたか</summary>
+    public bool IsOverdispersed { get; init; }
+    
+    /// <summary>解釈</summary>
+    public string Interpretation { get; init; } = "";
+}
+
+/// <summary>
+/// Poisson仮定との整合性を考慮した残差分析結果
+/// </summary>
+/// <remarks>
+/// NHPPモデルでは日次バグ数がPoisson分布に従うと仮定する。
+/// この結果クラスは、Poisson仮定の妥当性を評価するための
+/// 複数の診断情報を提供する。
+/// </remarks>
+public class PoissonConsistentAnalysisResult
+{
+    /// <summary>Pearson残差（Poisson用の標準的な残差）</summary>
+    public double[] PearsonResiduals { get; init; } = Array.Empty<double>();
+    
+    /// <summary>Deviance残差（GLMにおける逸脱度の分解）</summary>
+    public double[] DevianceResiduals { get; init; } = Array.Empty<double>();
+    
+    /// <summary>Anscombe残差（より正規性に近い分布）</summary>
+    public double[] AnscombeResiduals { get; init; } = Array.Empty<double>();
+    
+    /// <summary>ランダム化分位残差（離散分布でも正規性検定が可能）</summary>
+    public double[] RandomizedQuantileResiduals { get; init; } = Array.Empty<double>();
+    
+    /// <summary>過分散検定結果</summary>
+    public OverdispersionTestResult OverdispersionTest { get; init; } = new();
+    
+    /// <summary>残差の平均</summary>
+    public double Mean { get; init; }
+    
+    /// <summary>残差の標準偏差</summary>
+    public double StandardDeviation { get; init; }
+    
+    /// <summary>歪度（Skewness）</summary>
+    public double Skewness { get; init; }
+    
+    /// <summary>尖度（Kurtosis）</summary>
+    public double Kurtosis { get; init; }
+    
+    /// <summary>外れ値のインデックス（|残差| > 2σ）</summary>
+    public int[] OutlierIndices { get; init; } = Array.Empty<int>();
+    
+    /// <summary>系統的パターンの有無</summary>
+    public bool HasSystematicPattern { get; init; }
+    
+    /// <summary>パターンの説明</summary>
+    public string? PatternDescription { get; init; }
+    
+    /// <summary>ラン検定の結果</summary>
+    public RunsTestResult? RunsTest { get; init; }
+    
+    /// <summary>診断に基づく警告メッセージ</summary>
+    public List<string> Warnings { get; init; } = new();
+    
+    /// <summary>
+    /// 正規性検定に最適な残差を取得
+    /// </summary>
+    /// <remarks>
+    /// 離散分布（Poisson）の場合、ランダム化分位残差が正規性検定に最適。
+    /// </remarks>
+    public double[] GetResidualsForNormalityTest() => RandomizedQuantileResiduals;
+    
+    /// <summary>
+    /// 独立性検定に最適な残差を取得
+    /// </summary>
+    /// <remarks>
+    /// 独立性（ラン検定、自己相関）にはPearson残差を使用。
+    /// </remarks>
+    public double[] GetResidualsForIndependenceTest() => PearsonResiduals;
 }
 
 /// <summary>
@@ -219,11 +332,281 @@ public class ResidualAnalyzer
                 ResidualType.Raw => observed - expected,
                 ResidualType.Pearson => CalculatePearsonResidual(observed, expected),
                 ResidualType.Deviance => CalculateDevianceResidual(observed, expected),
+                ResidualType.Anscombe => CalculateAnscombeResidual(observed, expected),
+                ResidualType.StandardizedPearson => CalculatePearsonResidual(observed, expected), // 基本形（後でレバレッジ調整）
                 _ => observed - expected
             };
         }
         
         return residuals;
+    }
+    
+    /// <summary>
+    /// Poisson整合性を重視した残差分析を実行
+    /// </summary>
+    /// <param name="model">信頼度成長モデル</param>
+    /// <param name="tData">時刻データ</param>
+    /// <param name="yData">累積バグ発見数データ</param>
+    /// <param name="parameters">モデルパラメータ</param>
+    /// <returns>Poisson仮定の診断を含む残差分析結果</returns>
+    /// <remarks>
+    /// このメソッドはNHPP/Poisson仮定に基づく診断を重視し、以下を実施します：
+    /// <list type="bullet">
+    /// <item>Pearson残差による分析（Poisson仮定と整合）</item>
+    /// <item>過分散検定（Poisson仮定の妥当性チェック）</item>
+    /// <item>正規性検定結果に対する適切な警告</item>
+    /// </list>
+    /// </remarks>
+    public PoissonConsistentAnalysisResult AnalyzeWithPoissonDiagnostics(
+        ReliabilityGrowthModelBase model,
+        double[] tData,
+        double[] yData,
+        double[] parameters)
+    {
+        // 日次データと期待値を計算
+        var dailyObserved = ConvertToDailyData(yData);
+        var dailyExpected = CalculateDailyExpected(model, tData, parameters);
+        
+        // 各種残差を計算
+        var pearsonResiduals = CalculateResiduals(model, tData, yData, parameters, ResidualType.Pearson);
+        var devianceResiduals = CalculateResiduals(model, tData, yData, parameters, ResidualType.Deviance);
+        var anscombeResiduals = CalculateResiduals(model, tData, yData, parameters, ResidualType.Anscombe);
+        
+        // 過分散検定
+        var overdispersionTest = PerformOverdispersionTest(dailyObserved, dailyExpected, parameters.Length);
+        
+        // Pearson残差の基本統計
+        double mean = CalculateMean(pearsonResiduals);
+        double std = CalculateStandardDeviation(pearsonResiduals, mean);
+        double skewness = CalculateSkewness(pearsonResiduals, mean, std);
+        double kurtosis = CalculateKurtosis(pearsonResiduals, mean, std);
+        
+        // 外れ値検出
+        var outliers = DetectOutliers(pearsonResiduals, mean, std, threshold: 2.0);
+        
+        // ラン検定
+        var runsTest = PerformRunsTest(pearsonResiduals);
+        
+        // 系統的パターン検出
+        var (hasPattern, description) = DetectSystematicPattern(pearsonResiduals, runsTest);
+        
+        // ランダム化分位残差
+        var randomizedQuantileResiduals = CalculateRandomizedQuantileResiduals(dailyObserved, dailyExpected);
+        
+        // 警告メッセージの生成
+        var warnings = GeneratePoissonDiagnosticWarnings(
+            overdispersionTest, dailyObserved, dailyExpected, pearsonResiduals.Length);
+        
+        return new PoissonConsistentAnalysisResult
+        {
+            PearsonResiduals = pearsonResiduals,
+            DevianceResiduals = devianceResiduals,
+            AnscombeResiduals = anscombeResiduals,
+            RandomizedQuantileResiduals = randomizedQuantileResiduals,
+            OverdispersionTest = overdispersionTest,
+            Mean = mean,
+            StandardDeviation = std,
+            Skewness = skewness,
+            Kurtosis = kurtosis,
+            OutlierIndices = outliers,
+            HasSystematicPattern = hasPattern,
+            PatternDescription = description,
+            RunsTest = runsTest,
+            Warnings = warnings
+        };
+    }
+    
+    /// <summary>
+    /// 過分散検定を実行
+    /// </summary>
+    /// <param name="observed">観測された日次バグ数</param>
+    /// <param name="expected">期待される日次バグ数（λ_i）</param>
+    /// <param name="numParameters">推定されたパラメータ数</param>
+    /// <returns>過分散検定の結果</returns>
+    /// <remarks>
+    /// Poisson分布では Var(Y) = E(Y) が成立する。
+    /// 過分散（Var > E）の場合、負の二項分布やquasi-Poissonモデルを検討すべき。
+    /// </remarks>
+    public static OverdispersionTestResult PerformOverdispersionTest(
+        double[] observed, 
+        double[] expected, 
+        int numParameters)
+    {
+        int n = observed.Length;
+        int df = n - numParameters;
+        
+        if (df <= 0)
+        {
+            return new OverdispersionTestResult
+            {
+                DispersionParameter = double.NaN,
+                PearsonChiSquare = double.NaN,
+                DegreesOfFreedom = df,
+                PValue = double.NaN,
+                IsOverdispersed = false,
+                Interpretation = "自由度が不足しています。パラメータ数に対してデータ点が少なすぎます。"
+            };
+        }
+        
+        // Pearson χ² 統計量 = Σ (y_i - λ_i)² / λ_i
+        double pearsonChiSq = 0;
+        int validCount = 0;
+        
+        for (int i = 0; i < n; i++)
+        {
+            if (expected[i] > 0)
+            {
+                double diff = observed[i] - expected[i];
+                pearsonChiSq += (diff * diff) / expected[i];
+                validCount++;
+            }
+        }
+        
+        // 有効な観測数で自由度を調整
+        df = validCount - numParameters;
+        if (df <= 0)
+        {
+            return new OverdispersionTestResult
+            {
+                DispersionParameter = double.NaN,
+                PearsonChiSquare = pearsonChiSq,
+                DegreesOfFreedom = df,
+                PValue = double.NaN,
+                IsOverdispersed = false,
+                Interpretation = "有効なデータ点が不足しています。"
+            };
+        }
+        
+        // 分散パラメータ φ = χ²/df
+        double phi = pearsonChiSq / df;
+        
+        // χ²検定のp値（上側確率）
+        // H0: φ = 1 (Poisson仮定が正しい)
+        // H1: φ > 1 (過分散)
+        double pValue = 1.0 - MathNet.Numerics.Distributions.ChiSquared.CDF(df, pearsonChiSq);
+        
+        bool isOverdispersed = phi > 1.5 && pValue < 0.05;
+        
+        string interpretation;
+        if (phi < 0.8)
+        {
+            interpretation = $"過小分散 (φ={phi:F3}): 分散が期待より小さい。データに制約がある可能性。";
+        }
+        else if (phi <= 1.2)
+        {
+            interpretation = $"等分散 (φ={phi:F3}): Poisson仮定は妥当。";
+        }
+        else if (phi <= 1.5)
+        {
+            interpretation = $"軽度の過分散 (φ={phi:F3}): Poisson仮定は概ね妥当だが、やや分散が大きい。";
+        }
+        else if (phi <= 3.0)
+        {
+            interpretation = $"中程度の過分散 (φ={phi:F3}): quasi-Poissonモデルの使用を推奨。信頼区間は過小評価の可能性。";
+        }
+        else
+        {
+            interpretation = $"重度の過分散 (φ={phi:F3}): 負の二項分布モデルの使用を強く推奨。Poisson仮定は不適切。";
+        }
+        
+        return new OverdispersionTestResult
+        {
+            DispersionParameter = phi,
+            PearsonChiSquare = pearsonChiSq,
+            DegreesOfFreedom = df,
+            PValue = pValue,
+            IsOverdispersed = isOverdispersed,
+            Interpretation = interpretation
+        };
+    }
+    
+    /// <summary>
+    /// ランダム化分位残差を計算（Dunn & Smyth, 1996）
+    /// </summary>
+    /// <param name="observed">観測された日次バグ数</param>
+    /// <param name="expected">期待される日次バグ数（λ_i）</param>
+    /// <returns>ランダム化分位残差（正規分布に従うはず）</returns>
+    /// <remarks>
+    /// Poisson分布のような離散分布では、通常の分位残差は離散的になる。
+    /// ランダム化分位残差は、CDF(y-1) と CDF(y) の間で一様乱数を使い、
+    /// 連続的な残差を生成する。これにより、正規性検定が適切に機能する。
+    /// </remarks>
+    public static double[] CalculateRandomizedQuantileResiduals(double[] observed, double[] expected)
+    {
+        int n = observed.Length;
+        var residuals = new double[n];
+        var random = new Random(42); // 再現性のため固定シード
+        
+        for (int i = 0; i < n; i++)
+        {
+            double lambda = expected[i];
+            int y = (int)Math.Round(observed[i]);
+            
+            if (lambda <= 0)
+            {
+                residuals[i] = 0;
+                continue;
+            }
+            
+            // Poisson CDF: F(y) = P(Y <= y)
+            double cdfY = MathNet.Numerics.Distributions.Poisson.CDF(lambda, y);
+            double cdfYMinus1 = y > 0 ? MathNet.Numerics.Distributions.Poisson.CDF(lambda, y - 1) : 0;
+            
+            // [F(y-1), F(y)] の間で一様乱数を生成
+            double u = cdfYMinus1 + random.NextDouble() * (cdfY - cdfYMinus1);
+            
+            // 標準正規分布の逆関数で変換
+            // u が 0 または 1 に極端に近い場合のクリッピング
+            u = Math.Max(1e-10, Math.Min(1 - 1e-10, u));
+            residuals[i] = MathNet.Numerics.Distributions.Normal.InvCDF(0, 1, u);
+        }
+        
+        return residuals;
+    }
+    
+    /// <summary>
+    /// Poisson診断に基づく警告メッセージを生成
+    /// </summary>
+    private static List<string> GeneratePoissonDiagnosticWarnings(
+        OverdispersionTestResult overdispersionTest,
+        double[] dailyObserved,
+        double[] dailyExpected,
+        int n)
+    {
+        var warnings = new List<string>();
+        
+        // サンプルサイズの警告
+        if (n < 10)
+        {
+            warnings.Add($"サンプルサイズが小さい（n={n}）。統計的検定の信頼性が低下します。");
+        }
+        
+        // 過分散の警告
+        if (overdispersionTest.IsOverdispersed)
+        {
+            warnings.Add($"過分散が検出されました（φ={overdispersionTest.DispersionParameter:F2}）。" +
+                        "信頼区間・予測区間は過小評価されている可能性があります。");
+        }
+        
+        // 期待値が小さい場合の警告
+        int smallLambdaCount = dailyExpected.Count(lambda => lambda > 0 && lambda < 5);
+        if (smallLambdaCount > n * 0.3)
+        {
+            warnings.Add($"期待値が小さい（λ<5）データ点が{smallLambdaCount}個あります。" +
+                        "Pearson残差の正規近似は信頼性が低い可能性があります。" +
+                        "ランダム化分位残差の使用を推奨します。");
+        }
+        
+        // ゼロ過剰の警告
+        int zeroCount = dailyObserved.Count(y => y == 0);
+        double expectedZeros = dailyExpected.Sum(lambda => lambda > 0 ? Math.Exp(-lambda) : 0);
+        if (zeroCount > expectedZeros * 1.5 && zeroCount > 3)
+        {
+            warnings.Add($"ゼロの数（{zeroCount}）が期待値（{expectedZeros:F1}）より多い。" +
+                        "ゼロ過剰Poissonモデル（ZIP）の使用を検討してください。");
+        }
+        
+        return warnings;
     }
 
     /// <summary>
@@ -322,6 +705,30 @@ public class ResidualAnalyzer
         }
         
         return Math.Sign(observed - expected) * Math.Sqrt(Math.Max(0, term));
+    }
+    
+    /// <summary>
+    /// Anscombe残差を計算（Poisson分布用）
+    /// </summary>
+    /// <param name="observed">観測値</param>
+    /// <param name="expected">期待値（λ）</param>
+    /// <returns>Anscombe残差</returns>
+    /// <remarks>
+    /// Anscombe残差は分散安定化変換に基づく残差で、
+    /// Pearson残差やDeviance残差よりも正規分布に近い分布を持つ。
+    /// 計算式: (3/2) * (y^(2/3) - λ^(2/3)) / λ^(1/6)
+    /// </remarks>
+    private static double CalculateAnscombeResidual(double observed, double expected)
+    {
+        if (expected <= 0)
+            return 0;
+        
+        // Anscombe (1953) の分散安定化変換
+        double yPow = Math.Pow(Math.Max(0, observed), 2.0 / 3.0);
+        double lambdaPow = Math.Pow(expected, 2.0 / 3.0);
+        double denominator = Math.Pow(expected, 1.0 / 6.0);
+        
+        return 1.5 * (yPow - lambdaPow) / denominator;
     }
 
     /// <summary>

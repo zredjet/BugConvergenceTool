@@ -167,6 +167,184 @@ public static class OptimizerFactory
     }
     
     /// <summary>
+    /// マルチスタート最適化：複数の初期点から最適化を行い、最良の結果を返す
+    /// </summary>
+    /// <param name="objectiveFunction">目的関数</param>
+    /// <param name="lowerBounds">パラメータ下限</param>
+    /// <param name="upperBounds">パラメータ上限</param>
+    /// <param name="initialGuess">初期推定値（基準点として使用）</param>
+    /// <param name="optimizer">使用するオプティマイザ</param>
+    /// <param name="numStarts">開始点の数（デフォルト: 5）</param>
+    /// <param name="verbose">詳細出力</param>
+    /// <returns>最良の最適化結果</returns>
+    /// <remarks>
+    /// <para>
+    /// マルチスタート法は局所最適解の問題を軽減するために複数の初期点から最適化を実行します。
+    /// 初期点の生成方法：
+    /// 1. 指定された初期推定値（あれば）
+    /// 2. ラテン超方格サンプリング（LHS）による分散配置
+    /// 3. 境界付近のサンプリング（パラメータが境界に張り付くケースに対応）
+    /// </para>
+    /// </remarks>
+    public static OptimizationResult MultiStartOptimize(
+        Func<double[], double> objectiveFunction,
+        double[] lowerBounds,
+        double[] upperBounds,
+        double[]? initialGuess = null,
+        IOptimizer? optimizer = null,
+        int numStarts = 5,
+        bool verbose = false)
+    {
+        optimizer ??= Create(OptimizerType.DifferentialEvolution);
+        int dim = lowerBounds.Length;
+        
+        // 初期点を生成
+        var startPoints = GenerateStartPoints(lowerBounds, upperBounds, initialGuess, numStarts);
+        
+        var results = new List<OptimizationResult>();
+        
+        if (verbose)
+        {
+            Console.WriteLine($"  マルチスタート最適化: {numStarts}点から{optimizer.Name}で探索...");
+        }
+        
+        int startIdx = 0;
+        foreach (var startPoint in startPoints)
+        {
+            try
+            {
+                var result = optimizer.Optimize(objectiveFunction, lowerBounds, upperBounds, startPoint);
+                
+                if (result.Success)
+                {
+                    results.Add(result);
+                    
+                    if (verbose)
+                    {
+                        Console.WriteLine($"    開始点{startIdx + 1}: 目的関数値={result.ObjectiveValue:E4}");
+                    }
+                }
+            }
+            catch
+            {
+                // 個別の最適化失敗は無視
+            }
+            
+            startIdx++;
+        }
+        
+        if (results.Count == 0)
+        {
+            return new OptimizationResult
+            {
+                Success = false,
+                ErrorMessage = "全ての開始点で最適化に失敗しました",
+                AlgorithmName = $"MultiStart({optimizer.Name})"
+            };
+        }
+        
+        // 最良結果を選択
+        var bestResult = results.OrderBy(r => r.ObjectiveValue).First();
+        bestResult.AlgorithmName = $"MultiStart({optimizer.Name})";
+        
+        if (verbose)
+        {
+            Console.WriteLine($"    最良結果: 目的関数値={bestResult.ObjectiveValue:E4}");
+        }
+        
+        return bestResult;
+    }
+    
+    /// <summary>
+    /// マルチスタート用の初期点を生成（LHS + 境界サンプリング）
+    /// </summary>
+    private static List<double[]> GenerateStartPoints(
+        double[] lowerBounds,
+        double[] upperBounds,
+        double[]? initialGuess,
+        int numStarts)
+    {
+        var points = new List<double[]>();
+        int dim = lowerBounds.Length;
+        var random = new Random();
+        
+        // 1. 初期推定値を追加（あれば）
+        if (initialGuess != null && initialGuess.Length == dim)
+        {
+            points.Add((double[])initialGuess.Clone());
+        }
+        
+        // 2. ラテン超方格サンプリング（簡易版LHS）
+        int lhsCount = Math.Max(1, numStarts - points.Count - 1);
+        var lhsPoints = GenerateLHSPoints(lowerBounds, upperBounds, lhsCount, random);
+        points.AddRange(lhsPoints);
+        
+        // 3. 中央点を追加
+        if (points.Count < numStarts)
+        {
+            var centerPoint = new double[dim];
+            for (int i = 0; i < dim; i++)
+            {
+                centerPoint[i] = (lowerBounds[i] + upperBounds[i]) / 2.0;
+            }
+            points.Add(centerPoint);
+        }
+        
+        // 4. 境界付近の点を追加（残りの枠がある場合）
+        while (points.Count < numStarts)
+        {
+            var boundaryPoint = new double[dim];
+            for (int i = 0; i < dim; i++)
+            {
+                double range = upperBounds[i] - lowerBounds[i];
+                // 10%または90%の位置にランダムに配置
+                double position = random.NextDouble() < 0.5 ? 0.1 : 0.9;
+                boundaryPoint[i] = lowerBounds[i] + range * position;
+            }
+            points.Add(boundaryPoint);
+        }
+        
+        return points.Take(numStarts).ToList();
+    }
+    
+    /// <summary>
+    /// ラテン超方格サンプリング（簡易版）
+    /// </summary>
+    private static List<double[]> GenerateLHSPoints(
+        double[] lowerBounds,
+        double[] upperBounds,
+        int numPoints,
+        Random random)
+    {
+        int dim = lowerBounds.Length;
+        var points = new List<double[]>();
+        
+        // 各次元でnumPoints個の区間に分割
+        var permutations = new int[dim][];
+        for (int d = 0; d < dim; d++)
+        {
+            permutations[d] = Enumerable.Range(0, numPoints).OrderBy(_ => random.Next()).ToArray();
+        }
+        
+        for (int i = 0; i < numPoints; i++)
+        {
+            var point = new double[dim];
+            for (int d = 0; d < dim; d++)
+            {
+                double range = upperBounds[d] - lowerBounds[d];
+                double intervalSize = range / numPoints;
+                int interval = permutations[d][i];
+                
+                // 区間内でランダムに配置
+                point[d] = lowerBounds[d] + intervalSize * (interval + random.NextDouble());
+            }
+            points.Add(point);
+        }
+        
+        return points;
+    }
+    
+    /// <summary>
     /// アルゴリズム比較レポートを生成
     /// </summary>
     public static OptimizerComparisonReport CompareOptimizers(
