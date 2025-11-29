@@ -130,8 +130,7 @@ public class GridSearchGradientOptimizer : IOptimizer
                     bestParams = (double[])p.Clone();
                 }
                 
-                if (iter % 100 == 0)
-                    result.ConvergenceHistory.Add(bestSSE);
+                result.ConvergenceHistory.Add(bestSSE);
                 
                 result.Iterations = iter + 1;
             }

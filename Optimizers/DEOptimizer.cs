@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 
 namespace BugConvergenceTool.Optimizers;
 
@@ -40,7 +41,7 @@ public class DEOptimizer : IOptimizer
         _F = F;
         _CR = CR;
         _tolerance = tolerance;
-        _random = seed.HasValue ? new Random(seed.Value) : new Random();
+        _random = seed.HasValue ? new Random(seed.Value) : new Random(RandomNumberGenerator.GetInt32(int.MaxValue));
     }
     
     public OptimizationResult Optimize(

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 
 namespace BugConvergenceTool.Optimizers;
 
@@ -32,7 +33,7 @@ public class GWOOptimizer : IOptimizer
         _packSize = packSize;
         _maxIterations = maxIterations;
         _tolerance = tolerance;
-        _random = seed.HasValue ? new Random(seed.Value) : new Random();
+        _random = seed.HasValue ? new Random(seed.Value) : new Random(RandomNumberGenerator.GetInt32(int.MaxValue));
     }
     
     public OptimizationResult Optimize(
