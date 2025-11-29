@@ -123,7 +123,11 @@ public class ModelFitter
             // 適合度指標を計算（全データに対して）
             result.R2 = model.CalculateR2(_tData, _yData, parameters);
             result.MSE = model.CalculateSSE(_tData, _yData, parameters) / _tData.Length;
-            result.AIC = model.CalculateAIC(_tData, _yData, parameters);
+            
+            // AICは損失関数のタイプに応じて適切な方法で計算
+            // SSE: 正規分布仮定のAIC近似式 n*ln(SSE/n) + 2k
+            // MLE: Poisson-NHPPの対数尤度ベース 2k - 2ln(L)
+            result.AIC = lossFunction.CalculateAIC(_tData, _yData, model, parameters);
             
             // ホールドアウト検証
             if (_splitResult != null && _splitResult.IsValid)
