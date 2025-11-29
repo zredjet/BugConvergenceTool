@@ -1,13 +1,27 @@
 namespace BugConvergenceTool.Models;
 
 /// <summary>
-/// パラメトリック Coverage NHPP モデルの基底クラス
-/// C(t) をテストカバレッジ関数として m(t) = a · C(t) と定義
-/// 実測カバレッジデータなしで、時間 t からカバレッジを近似
+/// パラメトリック NHPP モデルの基底クラス（擬似カバレッジ形状）
+/// C(t) を時間ベースのカバレッジ様関数として m(t) = a · C(t) と定義
 /// </summary>
+/// <remarks>
+/// <para>
+/// <strong>学術的注記:</strong>
+/// これらのモデルは「実測カバレッジデータなしの擬似カバレッジモデル」です。
+/// 時間 t を説明変数としてカバレッジ的な振る舞いを近似します。
+/// 実測カバレッジデータを使用する真のカバレッジベースSRGMとは区別されます。
+/// </para>
+/// <para>
+/// 実測カバレッジデータがある場合は、それを直接説明変数として
+/// 使用するモデルを推奨します。
+/// </para>
+/// </remarks>
 public abstract class CoverageModelBase : ReliabilityGrowthModelBase
 {
-    public override string Category => "Coverage";
+    /// <summary>
+    /// カテゴリ名（「擬似カバレッジ」として明確化）
+    /// </summary>
+    public override string Category => "擬似Coverage";
 
     /// <summary>
     /// カバレッジ関数 C(t) を計算（0〜1）
@@ -16,20 +30,26 @@ public abstract class CoverageModelBase : ReliabilityGrowthModelBase
 }
 
 /// <summary>
-/// Weibull Coverage NHPP モデル
+/// Weibull型擬似カバレッジ NHPP モデル
 /// C(t) = 1 - exp(-(βt)^γ)
 /// m(t) = a · C(t) = a(1 - exp(-(βt)^γ))
 /// </summary>
 /// <remarks>
+/// <para>
+/// Weibull分布に基づく擬似カバレッジ関数モデル。
+/// 実測カバレッジデータなしで、時間を説明変数として使用します。
+/// 数学的には一般化指数型 NHPP（Ohba型）と同等です。
+/// </para>
+/// <para>
 /// - β: 時間スケールパラメータ（大きいほど立ち上がりが早い）
-/// - γ: 形状パラメータ（γ>1でS字型、γ=1で指数型、γ&lt;1で凸型）
-/// 一般化指数型 NHPP と同等だが、coverage として解釈できる
+/// - γ: 形状パラメータ（γ&gt;1でS字型、γ=1で指数型、γ&lt;1で凸型）
+/// </para>
 /// </remarks>
 public class WeibullCoverageModel : CoverageModelBase
 {
-    public override string Name => "Weibull Coverage";
+    public override string Name => "Weibull型擬似Coverage";
     public override string Formula => "m(t) = a(1-e^(-(βt)^γ)), C(t) = 1-e^(-(βt)^γ)";
-    public override string Description => "Weibull分布ベースのカバレッジ関数モデル。γ>1でS字、γ<1で凸型";
+    public override string Description => "Weibull分布型擬似カバレッジ。γ>1でS字、γ<1で凸型。Ohba型と同等";
     public override string[] ParameterNames => new[] { "a", "β", "γ" };
 
     public override double Coverage(double t, double[] parameters)
@@ -95,20 +115,26 @@ public class WeibullCoverageModel : CoverageModelBase
 }
 
 /// <summary>
-/// Logistic Coverage NHPP モデル
+/// Logistic型擬似カバレッジ NHPP モデル
 /// C(t) = 1 / (1 + exp(-β(t - τ)))
 /// m(t) = a · C(t)
 /// </summary>
 /// <remarks>
-/// - β: カバレッジ立ち上がりの鋭さ（大きいほど急峻）
-/// - τ: カバレッジが50%に達する時刻
-/// S字型カーブが必要な場合に適する
+/// <para>
+/// ロジスティック関数に基づく擬似カバレッジモデル。
+/// 実測カバレッジデータなしで、時間を説明変数として使用します。
+/// S字型カーブが必要な場合に適します。
+/// </para>
+/// <para>
+/// - β: 擬似カバレッジ立ち上がりの鋭さ（大きいほど急峻）
+/// - τ: 擬似カバレッジが50%に達する時刻
+/// </para>
 /// </remarks>
 public class LogisticCoverageModel : CoverageModelBase
 {
-    public override string Name => "Logistic Coverage";
+    public override string Name => "Logistic型擬似Coverage";
     public override string Formula => "m(t) = a/(1+e^(-β(t-τ))), C(t) = 1/(1+e^(-β(t-τ)))";
-    public override string Description => "ロジスティック関数ベースのカバレッジモデル。τでカバレッジ50%";
+    public override string Description => "Logistic型擬似カバレッジ。τで擬似Coverage50%、対称S字型";
     public override string[] ParameterNames => new[] { "a", "β", "τ" };
 
     public override double Coverage(double t, double[] parameters)
@@ -178,20 +204,26 @@ public class LogisticCoverageModel : CoverageModelBase
 }
 
 /// <summary>
-/// Gompertz Coverage NHPP モデル
+/// Gompertz型擬似カバレッジ NHPP モデル
 /// C(t) = exp(-exp(-β(t - τ)))
 /// m(t) = a · C(t)
 /// </summary>
 /// <remarks>
-/// - β: カバレッジ増加率
+/// <para>
+/// Gompertz曲線に基づく擬似カバレッジモデル。
+/// 実測カバレッジデータなしで、時間を説明変数として使用します。
+/// 非対称S字型で、テスト初期の遅い立ち上がりを表現します。
+/// </para>
+/// <para>
+/// - β: 擬似カバレッジ増加率
 /// - τ: 変曲点時刻（最大増加率の時点）
-/// 非対称S字型で、テスト初期の遅い立ち上がりを表現
+/// </para>
 /// </remarks>
 public class GompertzCoverageModel : CoverageModelBase
 {
-    public override string Name => "Gompertz Coverage";
+    public override string Name => "Gompertz型擬似Coverage";
     public override string Formula => "m(t) = a·exp(-e^(-β(t-τ))), C(t) = exp(-e^(-β(t-τ)))";
-    public override string Description => "Gompertz曲線ベースのカバレッジモデル。非対称S字型";
+    public override string Description => "Gompertz型擬似カバレッジ。非対称S字型、初期は遅い立ち上がり";
     public override string[] ParameterNames => new[] { "a", "β", "τ" };
 
     public override double Coverage(double t, double[] parameters)
@@ -264,17 +296,24 @@ public static class CoverageModelFactory
     /// </summary>
     public static IEnumerable<ReliabilityGrowthModelBase> GetAllCoverageModels()
     {
-        yield return new WeibullCoverageModel();
+        // 注意: Weibull型擬似CoverageはOhba型（Weibull）と数学的に同等のため、
+        // 基本モデルとの重複を避けるためS字型のみを返す
         yield return new LogisticCoverageModel();
         yield return new GompertzCoverageModel();
     }
 
     /// <summary>
-    /// 推奨 Coverage モデルを取得（Weibull のみ）
+    /// 推奨 Coverage モデルを取得（S字型のみ）
     /// </summary>
+    /// <remarks>
+    /// Weibull型擬似Coverageは基本モデルのOhba型（Weibull）と数学的に同等のため、
+    /// 重複を避けるために除外しています。
+    /// Logistic型とGompertz型は異なる形状を持つため利用価値があります。
+    /// </remarks>
     public static IEnumerable<ReliabilityGrowthModelBase> GetRecommendedCoverageModels()
     {
-        yield return new WeibullCoverageModel();
+        yield return new LogisticCoverageModel();
+        yield return new GompertzCoverageModel();
     }
 
     /// <summary>
@@ -282,6 +321,19 @@ public static class CoverageModelFactory
     /// </summary>
     public static IEnumerable<ReliabilityGrowthModelBase> GetSShapedCoverageModels()
     {
+        yield return new LogisticCoverageModel();
+        yield return new GompertzCoverageModel();
+    }
+
+    /// <summary>
+    /// Weibull型を含む全Coverageモデルを取得（上級者向け）
+    /// </summary>
+    /// <remarks>
+    /// Weibull型はOhba型と同等であることを理解した上で使用してください。
+    /// </remarks>
+    public static IEnumerable<ReliabilityGrowthModelBase> GetAllCoverageModelsIncludingWeibull()
+    {
+        yield return new WeibullCoverageModel();
         yield return new LogisticCoverageModel();
         yield return new GompertzCoverageModel();
     }

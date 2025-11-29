@@ -503,51 +503,43 @@ public static class ChangePointDetector
 }
 
 /// <summary>
-/// PNZ型不完全デバッグ＋変化点モデル（実効時間 u(t) 方式）
+/// 不完全デバッグ＋変化点モデル（実効時間 u(t) 方式）
 /// m(t) = a * (1 - e^(-u(t))) / (1 + p * e^(-u(t)))
 /// u(t) = b₁*t (t ≤ τ), b₁*τ + b₂*(t-τ) (t > τ)
 /// </summary>
 /// <remarks>
-/// PNZ型をベースに、変化点τで検出率bが変化するモデル。
+/// <para>
+/// 不完全デバッグモデル（Pham 1993）に検出率変化点を導入したモデル。
 /// 「実効テスト時間」u(t)を導入することでm(t)がτ前後で自動的に連続となる。
+/// </para>
+/// <para>
+/// パラメータの解釈:
 /// - b₂ > b₁: テスト強化（変化点以降の収束が加速）
 /// - b₂ &lt; b₁: テスト弱体化（変化点以降の収束が減速）
+/// - p: 不完全デバッグ係数（0 ≤ p &lt; 1）
+/// </para>
 /// </remarks>
 public class ImperfectDebugExponentialChangePointModel : ChangePointModelBase
 {
-    public override string Name => "PNZ型+変化点";
+    public override string Name => "不完全デバッグ+変化点(実効時間)";
     public override string Category => "変化点+不完全";
     public override string Formula => "m(t) = a(1-e^(-u(t)))/(1+p·e^(-u(t))), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]";
-    public override string Description => "PNZ型不完全デバッグに検出率変化点を導入（実効時間方式）";
+    public override string Description => "不完全デバッグモデルに検出率変化点を導入（実効時間方式）";
     public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "p", "τ" };
 
     /// <summary>
     /// 漸近的総欠陥数
-    /// t→∞ で u(t)→∞ より m(∞) = a / (1 + p)
+    /// t→∞ で u(t)→∞ より m(∞) = a
     /// </summary>
     /// <remarks>
-    /// p >= 1 の場合は漸近値が発散（または負になる）ため、上限を設定。
-    /// p が負の場合でも数学的には a / (1 + p) で正しく、
-    /// 例えば p = -0.2 なら漸近値は a / 0.8 = 1.25a となる。
+    /// 数学的には m(∞) = lim[t→∞] a(1-e^(-u))/(1+p·e^(-u)) = a/1 = a
+    /// つまり、不完全デバッグパラメータ p に関わらず漸近値は a となる。
     /// </remarks>
     public override double GetAsymptoticTotalBugs(double[] parameters)
     {
         double a = parameters[0];
-        double p = parameters[3];
-
-        // p >= 1 の場合は分母が0以下となり発散するため、上限を設定
-        if (p >= 1.0)
-        {
-            // 警告: このパラメータ値では漸近値が定義されない
-            // 実務的な上限として a の大きな倍数を返す
-            return a * 100.0;
-        }
-
-        // p < 1 の全ケースで統一的に計算
-        // p < 0: 漸近値は a より大きくなる（新規欠陥導入効果）
-        // p = 0: 標準指数型と同じ（漸近値 = a）
-        // 0 < p < 1: 漸近値は a より小さくなる（不完全修正効果）
-        return a / (1.0 + p);
+        // t → ∞ で e^(-u) → 0 より、m(∞) = a(1-0)/(1+0) = a
+        return a;
     }
 
     public override double Calculate(double t, double[] parameters)
@@ -622,19 +614,20 @@ public class ImperfectDebugExponentialChangePointModel : ChangePointModelBase
         double maxY = yData.Max();
         int n = tData.Length;
 
+        // p の下限は 0（学術的標準）
         return (
             new[] {
                 maxY,      // a: 下限は観測最大値
                 1e-8,      // b₁: 正の小さな値
                 1e-8,      // b₂: 正の小さな値
-                -0.5,      // p: 既存実装に合わせる
+                0.0,       // p: 学術的標準では 0 ≤ p < 1
                 2.0        // τ: 最小インデックス+1
             },
             new[] {
                 maxY * 100, // a: 上限は観測最大値の100倍
                 10.0,       // b₁
                 10.0,       // b₂
-                5.0,        // p
+                0.99,       // p: 上限は 1 未満
                 n - 2.0     // τ: 最大インデックス-2
             }
         );

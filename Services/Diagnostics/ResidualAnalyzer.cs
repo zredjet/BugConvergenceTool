@@ -5,16 +5,49 @@ namespace BugConvergenceTool.Services.Diagnostics;
 /// <summary>
 /// 残差の種類
 /// </summary>
+/// <remarks>
+/// <para>
+/// SRGMは累積平均関数 m(t) をモデル化するが、NHPPの仮定下では増分（日次バグ数）が
+/// 独立なPoisson分布に従う。そのため、残差診断は以下の2つの観点から行える：
+/// </para>
+/// <para>
+/// 1. 増分ベース（日次データ）: Poisson仮定に基づくPearson残差・Deviance残差
+///    - 独立性の仮定が満たされやすい
+///    - NHPPの理論と整合
+/// </para>
+/// <para>
+/// 2. 累積ベース: 累積データに対する通常残差
+///    - モデルの当てはまりを直接評価
+///    - ただし累積データは自己相関を持つため、独立性の仮定は成立しない
+/// </para>
+/// </remarks>
 public enum ResidualType
 {
-    /// <summary>通常残差: e_i = y_i - m(t_i)</summary>
+    /// <summary>
+    /// 通常残差（増分ベース）: e_i = Δy_i - Δm(t_i)
+    /// 日次バグ数の観測値と期待値の差
+    /// </summary>
     Raw,
     
-    /// <summary>Pearson残差（Poisson用）: (y_i - λ_i) / √λ_i</summary>
+    /// <summary>
+    /// Pearson残差（増分ベース、Poisson用）: (Δy_i - λ_i) / √λ_i
+    /// λ_i = m(t_i) - m(t_{i-1}) は期待される日次バグ数
+    /// 分散安定化された残差で、Poisson仮定下では近似的に標準正規分布に従う
+    /// </summary>
     Pearson,
     
-    /// <summary>Deviance残差: sign(y-λ) * √(2 * [y*log(y/λ) - (y-λ)])</summary>
-    Deviance
+    /// <summary>
+    /// Deviance残差（増分ベース）: sign(Δy-λ) * √(2 * [Δy*log(Δy/λ) - (Δy-λ)])
+    /// Poisson GLMにおけるモデル逸脱度への寄与を表す残差
+    /// </summary>
+    Deviance,
+    
+    /// <summary>
+    /// 累積残差: e_i = Y_i - m(t_i)
+    /// 累積バグ数の観測値とモデル予測値の差
+    /// 注意: 累積データは自己相関を持つため、独立性検定（ラン検定等）の解釈に注意
+    /// </summary>
+    Cumulative
 }
 
 /// <summary>
@@ -145,6 +178,11 @@ public class ResidualAnalyzer
     /// <param name="parameters">モデルパラメータ</param>
     /// <param name="type">残差の種類</param>
     /// <returns>残差の配列</returns>
+    /// <remarks>
+    /// 残差タイプによる計算方法の違い：
+    /// - Raw, Pearson, Deviance: 増分（日次）ベースで計算。NHPPのPoisson仮定に適合。
+    /// - Cumulative: 累積ベースで計算。モデルの当てはまりを直接評価。
+    /// </remarks>
     public double[] CalculateResiduals(
         ReliabilityGrowthModelBase model,
         double[] tData,
@@ -155,7 +193,19 @@ public class ResidualAnalyzer
         int n = tData.Length;
         var residuals = new double[n];
         
-        // 日次データに変換（累積の差分）
+        // 累積ベースの残差
+        if (type == ResidualType.Cumulative)
+        {
+            for (int i = 0; i < n; i++)
+            {
+                double observed = yData[i];
+                double expected = model.Calculate(tData[i], parameters);
+                residuals[i] = observed - expected;
+            }
+            return residuals;
+        }
+        
+        // 増分（日次）ベースの残差
         var dailyObserved = ConvertToDailyData(yData);
         var dailyExpected = CalculateDailyExpected(model, tData, parameters);
         
@@ -185,6 +235,11 @@ public class ResidualAnalyzer
     /// <param name="parameters">モデルパラメータ</param>
     /// <param name="type">残差の種類（デフォルト: Pearson）</param>
     /// <returns>残差分析結果</returns>
+    /// <remarks>
+    /// 累積残差（Cumulative）を使用する場合、累積データは本質的に自己相関を持つため、
+    /// ラン検定やDurbin-Watson検定の結果は参考値として扱う必要があります。
+    /// 独立性の検定にはPearson残差またはDeviance残差（増分ベース）を推奨します。
+    /// </remarks>
     public ResidualAnalysisResult Analyze(
         ReliabilityGrowthModelBase model,
         double[] tData,
@@ -214,6 +269,10 @@ public class ResidualAnalyzer
         if (residuals.Length < 10)
         {
             smallSampleWarning = $"サンプルサイズが小さい（n={residuals.Length}）ため、検定結果は参考値です。";
+        }
+        else if (type == ResidualType.Cumulative)
+        {
+            smallSampleWarning = "累積残差は自己相関を持つため、独立性検定（ラン検定、DW検定）の結果は参考値です。";
         }
         
         return new ResidualAnalysisResult
