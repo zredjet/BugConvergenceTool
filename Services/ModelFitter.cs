@@ -127,7 +127,8 @@ public class ModelFitter
             // AICは損失関数のタイプに応じて適切な方法で計算
             // SSE: 正規分布仮定のAIC近似式 n*ln(SSE/n) + 2k
             // MLE: Poisson-NHPPの対数尤度ベース 2k - 2ln(L)
-            result.AIC = lossFunction.CalculateAIC(_tData, _yData, model, parameters);
+            // FREモデルの場合は発見+修正の結合尤度を使用
+            result.AIC = lossFunction.CalculateAIC(_tData, _yData, model, parameters, _yFixedData);
             
             // ホールドアウト検証
             if (_splitResult != null && _splitResult.IsValid)
@@ -213,18 +214,8 @@ public class ModelFitter
         var initial = model.GetInitialParameters(tData, yData);
         
         // 目的関数の構築
-        // FREモデルの場合は発見数SSE + 修正数SSEの合計を最小化（損失関数切り替えは非対応）
-        Func<double[], double> objective;
-        
-        if (model is FaultRemovalEfficiencyModelBase freModel)
-        {
-            objective = p => CalculateFREObjective(freModel, p, tData);
-        }
-        else
-        {
-            // 指定された損失関数を使用
-            objective = p => lossFunction.Evaluate(tData, yData, model, p);
-        }
+        // 全モデルで損失関数を使用（FREモデルの場合は発見+修正の同時推定）
+        Func<double[], double> objective = p => lossFunction.Evaluate(tData, yData, model, p, _yFixedData);
         
         OptimizationResult result;
         
@@ -256,33 +247,6 @@ public class ModelFitter
     }
     
     /// <summary>
-    /// FREモデル用の目的関数（発見数SSE + 修正数SSE）
-    /// </summary>
-    private double CalculateFREObjective(FaultRemovalEfficiencyModelBase model, double[] parameters, double[] tData)
-    {
-        double sseDetected = 0;
-        double sseCorrected = 0;
-        
-        // ホールドアウト時は訓練データのみを使用
-        int endIndex = tData.Length;
-        
-        for (int i = 0; i < endIndex; i++)
-        {
-            // 発見数の残差
-            double predictedDetected = model.CalculateDetected(tData[i], parameters);
-            double residualDetected = _yData[i] - predictedDetected;
-            sseDetected += residualDetected * residualDetected;
-            
-            // 修正数の残差
-            double predictedCorrected = model.CalculateCorrected(tData[i], parameters);
-            double residualCorrected = _yFixedData[i] - predictedCorrected;
-            sseCorrected += residualCorrected * residualCorrected;
-        }
-        
-        // 両方の誤差を合計（重み付けは1:1）
-        return sseDetected + sseCorrected;
-    }
-    
     /// <summary>
     /// 収束予測を計算
     /// </summary>

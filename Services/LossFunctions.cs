@@ -37,11 +37,17 @@ public interface ILossFunction
     /// 損失関数を評価
     /// </summary>
     /// <param name="tData">時間データ（日数）</param>
-    /// <param name="yData">累積バグ数データ</param>
+    /// <param name="yData">累積バグ発見数データ</param>
     /// <param name="model">信頼度成長モデル</param>
     /// <param name="parameters">モデルパラメータ</param>
+    /// <param name="yFixedData">累積バグ修正数データ（FREモデル用、オプション）</param>
     /// <returns>損失値（最小化対象）</returns>
-    double Evaluate(double[] tData, double[] yData, ReliabilityGrowthModelBase model, double[] parameters);
+    double Evaluate(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null);
     
     /// <summary>
     /// このモデルに対してこの損失関数がサポートされているか
@@ -54,21 +60,33 @@ public interface ILossFunction
     /// 対数尤度を計算（AIC計算用）
     /// </summary>
     /// <param name="tData">時間データ（日数）</param>
-    /// <param name="yData">累積バグ数データ</param>
+    /// <param name="yData">累積バグ発見数データ</param>
     /// <param name="model">信頼度成長モデル</param>
     /// <param name="parameters">モデルパラメータ</param>
+    /// <param name="yFixedData">累積バグ修正数データ（FREモデル用、オプション）</param>
     /// <returns>対数尤度 ln(L)</returns>
-    double CalculateLogLikelihood(double[] tData, double[] yData, ReliabilityGrowthModelBase model, double[] parameters);
+    double CalculateLogLikelihood(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null);
     
     /// <summary>
     /// AICを計算
     /// </summary>
     /// <param name="tData">時間データ（日数）</param>
-    /// <param name="yData">累積バグ数データ</param>
+    /// <param name="yData">累積バグ発見数データ</param>
     /// <param name="model">信頼度成長モデル</param>
     /// <param name="parameters">モデルパラメータ</param>
+    /// <param name="yFixedData">累積バグ修正数データ（FREモデル用、オプション）</param>
     /// <returns>AIC値</returns>
-    double CalculateAIC(double[] tData, double[] yData, ReliabilityGrowthModelBase model, double[] parameters);
+    double CalculateAIC(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null);
 }
 
 /// <summary>
@@ -80,15 +98,34 @@ public sealed class SseLossFunction : ILossFunction
     public string Name => "SSE (残差二乗和)";
     public string Description => "最小二乗法。累積バグ数に対する残差の二乗和を最小化。";
     
-    public double Evaluate(double[] tData, double[] yData, ReliabilityGrowthModelBase model, double[] parameters)
+    public double Evaluate(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null)
     {
         double sse = 0;
+        
+        // 発見数のSSE
         for (int i = 0; i < tData.Length; i++)
         {
             double predicted = model.Calculate(tData[i], parameters);
             double residual = yData[i] - predicted;
             sse += residual * residual;
         }
+        
+        // FREモデルの場合、修正数のSSEも追加
+        if (model is FaultRemovalEfficiencyModelBase freModel && yFixedData != null)
+        {
+            for (int i = 0; i < tData.Length; i++)
+            {
+                double predictedCorrected = freModel.CalculateCorrected(tData[i], parameters);
+                double residual = yFixedData[i] - predictedCorrected;
+                sse += residual * residual;
+            }
+        }
+        
         return sse;
     }
     
@@ -102,20 +139,59 @@ public sealed class SseLossFunction : ILossFunction
     /// SSEベースの対数尤度（正規分布仮定）
     /// ln(L) = -n/2 * ln(2π) - n/2 * ln(σ²) - SSE/(2σ²)
     /// σ² = SSE/n として計算
+    /// FREモデルの場合は発見+修正の結合尤度
     /// </summary>
-    public double CalculateLogLikelihood(double[] tData, double[] yData, ReliabilityGrowthModelBase model, double[] parameters)
+    public double CalculateLogLikelihood(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null)
     {
-        int n = tData.Length;
+        // FREモデルの場合、発見と修正それぞれの対数尤度を計算して合計
+        if (model is FaultRemovalEfficiencyModelBase freModel && yFixedData != null)
+        {
+            int n = tData.Length;
+            
+            // 発見数のSSE
+            double sseDetected = 0;
+            for (int i = 0; i < n; i++)
+            {
+                double predicted = freModel.CalculateDetected(tData[i], parameters);
+                double residual = yData[i] - predicted;
+                sseDetected += residual * residual;
+            }
+            
+            // 修正数のSSE
+            double sseCorrected = 0;
+            for (int i = 0; i < n; i++)
+            {
+                double predicted = freModel.CalculateCorrected(tData[i], parameters);
+                double residual = yFixedData[i] - predicted;
+                sseCorrected += residual * residual;
+            }
+            
+            if (sseDetected <= 0 || sseCorrected <= 0 || n == 0) 
+                return double.NegativeInfinity;
+            
+            // 各プロセスの対数尤度
+            double sigma2D = sseDetected / n;
+            double sigma2C = sseCorrected / n;
+            
+            double logLD = -n / 2.0 * (Math.Log(2 * Math.PI) + Math.Log(sigma2D) + 1);
+            double logLC = -n / 2.0 * (Math.Log(2 * Math.PI) + Math.Log(sigma2C) + 1);
+            
+            return logLD + logLC;
+        }
+        
+        // 通常モデル
+        int nPoints = tData.Length;
         double sse = Evaluate(tData, yData, model, parameters);
         
-        if (sse <= 0 || n == 0) return double.NegativeInfinity;
+        if (sse <= 0 || nPoints == 0) return double.NegativeInfinity;
         
-        // 最尤推定における分散 σ² = SSE/n
-        double sigma2 = sse / n;
-        
-        // ln(L) = -n/2 * ln(2π) - n/2 * ln(σ²) - n/2
-        //       = -n/2 * (ln(2π) + ln(σ²) + 1)
-        double logL = -n / 2.0 * (Math.Log(2 * Math.PI) + Math.Log(sigma2) + 1);
+        double sigma2 = sse / nPoints;
+        double logL = -nPoints / 2.0 * (Math.Log(2 * Math.PI) + Math.Log(sigma2) + 1);
         return logL;
     }
     
@@ -123,17 +199,32 @@ public sealed class SseLossFunction : ILossFunction
     /// SSEベースのAIC計算
     /// 正規分布仮定での最尤推定に対応
     /// AIC = n * ln(SSE/n) + 2k （定数項を無視した形式、従来互換）
+    /// FREモデルの場合は 2k - 2ln(L_total)
     /// </summary>
-    public double CalculateAIC(double[] tData, double[] yData, ReliabilityGrowthModelBase model, double[] parameters)
+    public double CalculateAIC(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null)
     {
-        int n = tData.Length;
         int k = parameters.Length;
+        
+        // FREモデルの場合、結合対数尤度からAICを計算
+        if (model is FaultRemovalEfficiencyModelBase && yFixedData != null)
+        {
+            double logL = CalculateLogLikelihood(tData, yData, model, parameters, yFixedData);
+            if (double.IsNegativeInfinity(logL) || double.IsNaN(logL))
+                return double.MaxValue;
+            return 2 * k - 2 * logL;
+        }
+        
+        // 通常モデル: 従来の公式
+        int n = tData.Length;
         double sse = Evaluate(tData, yData, model, parameters);
         
         if (sse <= 0) return double.MaxValue;
         
-        // 従来の公式: n * ln(SSE/n) + 2k
-        // これは AIC = 2k - 2ln(L) の定数項を無視した近似形式
         return n * Math.Log(sse / n) + 2 * k;
     }
 }
@@ -141,45 +232,72 @@ public sealed class SseLossFunction : ILossFunction
 /// <summary>
 /// 最尤推定（MLE）損失関数
 /// Poisson-NHPP（非斉次ポアソン過程）を前提とした負の対数尤度を最小化
+/// 全モデルでサポート（NHPP前提）
 /// </summary>
 public sealed class MleLossFunction : ILossFunction
 {
     public string Name => "MLE (最尤推定)";
     public string Description => "Poisson-NHPPに基づく最尤推定。日次バグ数がポアソン分布に従うと仮定。";
     
-    // MLEをサポートするモデル名のリスト（段階的に拡張）
-    private static readonly HashSet<string> SupportedModelNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        // 基本モデル（Phase 1）
-        "指数型（Goel-Okumoto）",
-        "遅延S字型",
-        "ゴンペルツ",
-        "修正ゴンペルツ",
-        "ロジスティック",
-        
-        // 不完全デバッグモデル（Phase 2）- 後で追加
-        // "PNZ型", "Yamada遅延S字型", "Pham-Zhang型"
-    };
-    
     /// <summary>
     /// 負の対数尤度を計算（最小化対象）
+    /// FREモデルの場合は発見+修正の結合尤度
     /// </summary>
-    public double Evaluate(double[] tData, double[] yData, ReliabilityGrowthModelBase model, double[] parameters)
+    public double Evaluate(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null)
     {
-        return -CalculateLogLikelihood(tData, yData, model, parameters);
+        return -CalculateLogLikelihood(tData, yData, model, parameters, yFixedData);
     }
     
+    /// <summary>
+    /// 全モデルでMLEをサポート
+    /// NHPPとして定義されたモデルに対してMLEは数学的に自然なアプローチ
+    /// 注意: 計算の安定性のため、強力なオプティマイザ（DE, CMA-ES）の使用を推奨
+    /// </summary>
     public bool IsSupported(ReliabilityGrowthModelBase model)
     {
-        return SupportedModelNames.Contains(model.Name);
+        // 全モデルでMLEをサポート
+        return true;
     }
     
     /// <summary>
     /// Poisson-NHPPの対数尤度を計算
     /// ln(L) = Σ[y_i * ln(λ_i) - λ_i - ln(y_i!)]
     /// ここで λ_i = m(t_i) - m(t_{i-1}) は期間 [t_{i-1}, t_i] の期待バグ数
+    /// FREモデルの場合は発見と修正の同時最尤推定（結合尤度）
     /// </summary>
-    public double CalculateLogLikelihood(double[] tData, double[] yData, ReliabilityGrowthModelBase model, double[] parameters)
+    public double CalculateLogLikelihood(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null)
+    {
+        // 発見数の対数尤度
+        double logLDetected = CalculateDetectedLogLikelihood(tData, yData, model, parameters);
+        
+        // FREモデルの場合、修正数の対数尤度を加算（同時最尤推定）
+        if (model is FaultRemovalEfficiencyModelBase freModel && yFixedData != null)
+        {
+            double logLCorrected = CalculateCorrectedLogLikelihood(tData, yFixedData, freModel, parameters);
+            return logLDetected + logLCorrected;
+        }
+        
+        return logLDetected;
+    }
+    
+    /// <summary>
+    /// 発見数の対数尤度を計算
+    /// </summary>
+    private double CalculateDetectedLogLikelihood(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters)
     {
         double logL = 0.0;
         double prevT = 0.0;
@@ -206,13 +324,52 @@ public sealed class MleLossFunction : ILossFunction
     }
     
     /// <summary>
+    /// 修正数の対数尤度を計算（FREモデル用）
+    /// </summary>
+    private double CalculateCorrectedLogLikelihood(
+        double[] tData, 
+        double[] yFixedData, 
+        FaultRemovalEfficiencyModelBase model, 
+        double[] parameters)
+    {
+        double logL = 0.0;
+        double prevT = 0.0;
+        
+        for (int i = 0; i < tData.Length; i++)
+        {
+            double t = tData[i];
+            
+            // 日次修正数（実測値）
+            double dailyFixed = (i == 0) ? yFixedData[i] : yFixedData[i] - yFixedData[i - 1];
+            
+            // 期待される修正数: m_c(t_i) - m_c(t_{i-1})
+            double mc = model.CalculateCorrected(t, parameters);
+            double mcPrev = model.CalculateCorrected(prevT, parameters);
+            double lambda = Math.Max(mc - mcPrev, 1e-9); // 0除算防止
+            
+            // Poisson対数尤度加算
+            logL += dailyFixed * Math.Log(lambda) - lambda - LogFactorial(dailyFixed);
+            
+            prevT = t;
+        }
+        
+        return logL;
+    }
+    
+    /// <summary>
     /// Poisson-NHPPベースのAIC計算
     /// AIC = 2k - 2ln(L)
+    /// FREモデルの場合は結合尤度 L_total = L_d × L_c を使用
     /// </summary>
-    public double CalculateAIC(double[] tData, double[] yData, ReliabilityGrowthModelBase model, double[] parameters)
+    public double CalculateAIC(
+        double[] tData, 
+        double[] yData, 
+        ReliabilityGrowthModelBase model, 
+        double[] parameters,
+        double[]? yFixedData = null)
     {
         int k = parameters.Length;
-        double logL = CalculateLogLikelihood(tData, yData, model, parameters);
+        double logL = CalculateLogLikelihood(tData, yData, model, parameters, yFixedData);
         
         if (double.IsNegativeInfinity(logL) || double.IsNaN(logL))
             return double.MaxValue;
@@ -243,14 +400,6 @@ public sealed class MleLossFunction : ILossFunction
         // スターリング近似: ln(n!) ≈ n*ln(n) - n + 0.5*ln(2πn)
         return n * Math.Log(n) - n + 0.5 * Math.Log(2 * Math.PI * n);
     }
-    
-    /// <summary>
-    /// モデルをMLEサポート対象に追加（拡張用）
-    /// </summary>
-    public static void AddSupportedModel(string modelName)
-    {
-        SupportedModelNames.Add(modelName);
-    }
 }
 
 /// <summary>
@@ -276,7 +425,7 @@ public static class LossFunctionFactory
     
     /// <summary>
     /// モデルに対して適切な損失関数を取得
-    /// MLEが指定されてもサポートされていない場合はSSEにフォールバック
+    /// 全モデルでMLE/SSE両方をサポート
     /// </summary>
     /// <param name="requestedType">要求された損失関数タイプ</param>
     /// <param name="model">対象モデル</param>
@@ -291,16 +440,9 @@ public static class LossFunctionFactory
     {
         var lossFunction = Create(requestedType);
         
-        if (lossFunction.IsSupported(model))
-        {
-            actualType = requestedType;
-            fallbackWarning = null;
-            return lossFunction;
-        }
-        
-        // MLEがサポートされていない場合はSSEにフォールバック
-        actualType = LossType.Sse;
-        fallbackWarning = $"モデル '{model.Name}' は MLE をサポートしていないため、SSE にフォールバックしました。";
-        return _sseLoss;
+        // 全モデルでサポート（フォールバックなし）
+        actualType = requestedType;
+        fallbackWarning = null;
+        return lossFunction;
     }
 }
