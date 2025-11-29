@@ -107,6 +107,11 @@ public enum OptimizerType
     GWO,
     
     /// <summary>
+    /// Nelder-Mead法（単体法）
+    /// </summary>
+    NelderMead,
+    
+    /// <summary>
     /// 全アルゴリズムで比較し最良を選択
     /// </summary>
     AutoSelect

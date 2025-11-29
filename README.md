@@ -43,7 +43,7 @@ BugConvergenceTool <入力Excel> [オプション]
 | `-o`, `--output DIR` | 出力ディレクトリを指定 |
 | `-v`, `--verbose` | 詳細出力 |
 | `--basic-only` | 基本モデルのみ使用 |
-| `--optimizer TYPE` | 最適化アルゴリズム（de/pso/gwo/grid/auto） |
+| `--optimizer TYPE` | 最適化アルゴリズム（de/pso/gwo/nm/grid/auto） |
 | `--change-point` | 変化点モデルを含める |
 | `--tef` | テスト工数関数モデルを含める |
 | `--fre` | 欠陥除去効率モデルを含める |

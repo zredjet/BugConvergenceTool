@@ -243,6 +243,7 @@ class Program
                             "pso" => OptimizerType.PSO,
                             "de" => OptimizerType.DifferentialEvolution,
                             "gwo" => OptimizerType.GWO,
+                            "nm" => OptimizerType.NelderMead,
                             "grid" => OptimizerType.GridSearchGradient,
                             "auto" => OptimizerType.AutoSelect,
                             _ => OptimizerType.DifferentialEvolution
@@ -305,6 +306,7 @@ class Program
         Console.WriteLine("                          de   - 差分進化（デフォルト、推奨）");
         Console.WriteLine("                          pso  - 粒子群最適化");
         Console.WriteLine("                          gwo  - Grey Wolf Optimizer");
+        Console.WriteLine("                          nm   - Nelder-Mead法（局所最適化）");
         Console.WriteLine("                          grid - グリッドサーチ+勾配降下法（従来手法）");
         Console.WriteLine("                          auto - 全アルゴリズムで比較し最良を選択");
         Console.WriteLine();
