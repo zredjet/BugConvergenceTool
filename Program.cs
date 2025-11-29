@@ -334,6 +334,9 @@ class Program
     
     static void PrintResults(List<FittingResult> results, FittingResult bestResult, TestData testData, bool verbose = false)
     {
+        // 現在の状況を表示
+        PrintCurrentStatus(testData);
+        
         Console.WriteLine("\n=== モデル比較結果 ===\n");
         
         // ホールドアウト検証の有無を判定
@@ -452,6 +455,110 @@ class Program
             }
             Console.ResetColor();
         }
+        
+        // 収束判断の目安を表示
+        PrintConvergenceAssessment(testData, bestResult);
+        
+        // verboseモード時にパラメータ詳細を表示
+        if (verbose)
+        {
+            PrintParameterDetails(bestResult);
+        }
+    }
+    
+    /// <summary>
+    /// 現在の状況を表示
+    /// </summary>
+    static void PrintCurrentStatus(TestData testData)
+    {
+        Console.WriteLine("\n=== 現在の状況 ===\n");
+        
+        var cumulativePlanned = testData.GetCumulativePlanned();
+        var cumulativeActual = testData.GetCumulativeActual();
+        var cumulativeFound = testData.GetCumulativeBugsFound();
+        var cumulativeFixed = testData.GetCumulativeBugsFixed();
+        var remaining = testData.GetRemainingBugs();
+        
+        Console.WriteLine($"テスト消化（予定）: {cumulativePlanned.Last():F0} / {testData.TotalTestCases} ({cumulativePlanned.Last() / testData.TotalTestCases * 100:F1}%)");
+        Console.WriteLine($"テスト消化（実績）: {cumulativeActual.Last():F0} / {testData.TotalTestCases} ({cumulativeActual.Last() / testData.TotalTestCases * 100:F1}%)");
+        Console.WriteLine($"累積バグ発生数:     {cumulativeFound.Last():F0} 件");
+        Console.WriteLine($"累積バグ修正数:     {cumulativeFixed.Last():F0} 件");
+        Console.WriteLine($"残存バグ数:         {remaining.Last():F0} 件");
+    }
+    
+    /// <summary>
+    /// 収束判断の目安を表示
+    /// </summary>
+    static void PrintConvergenceAssessment(TestData testData, FittingResult bestResult)
+    {
+        var cumulativeFound = testData.GetCumulativeBugsFound();
+        double currentRatio = cumulativeFound.Last() / bestResult.EstimatedTotalBugs;
+        
+        Console.WriteLine("\n=== 収束判断の目安 ===\n");
+        
+        if (currentRatio >= 0.99)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("  ★★★ 十分に収束しています。リリース可能な状態です。");
+        }
+        else if (currentRatio >= 0.95)
+        {
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine("  ★★☆ ほぼ収束しています。ベータリリースに適した状態です。");
+        }
+        else if (currentRatio >= 0.90)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("  ★☆☆ 収束傾向にあります。継続的なテストが推奨されます。");
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("  ☆☆☆ まだ収束していません。テスト継続が必要です。");
+        }
+        Console.ResetColor();
+        
+        Console.WriteLine($"\n  現在の発見率: {currentRatio * 100:F1}% ({cumulativeFound.Last():F0} / {bestResult.EstimatedTotalBugs:F1})");
+    }
+    
+    /// <summary>
+    /// 推奨モデルのパラメータ詳細を表示（verboseモード用）
+    /// </summary>
+    static void PrintParameterDetails(FittingResult bestResult)
+    {
+        Console.WriteLine($"\n=== 推奨モデル詳細（{bestResult.ModelName}）===\n");
+        
+        Console.WriteLine("パラメータ推定結果:");
+        foreach (var (name, value) in bestResult.Parameters)
+        {
+            string desc = name switch
+            {
+                "a" => "（潜在バグ総数）",
+                "b" => "（バグ発見率）",
+                "c" => "（形状パラメータ）",
+                "p" => "（不完全デバッグ率）",
+                "τ" or "tau" => "（変化点）",
+                "b1" => "（変化点前の発見率）",
+                "b2" => "（変化点後の発見率）",
+                "η" or "eta" => "（欠陥除去効率）",
+                "α" or "alpha" => "（バグ混入率）",
+                "β" or "beta" => "（スケールパラメータ）",
+                "γ" or "gamma" => "（形状パラメータ）",
+                _ => ""
+            };
+            
+            if (name == "p" || name == "η" || name == "eta")
+                Console.WriteLine($"  {name} = {value:F4} ({value * 100:F1}%) {desc}");
+            else
+                Console.WriteLine($"  {name} = {value:F4} {desc}");
+        }
+        
+        Console.WriteLine("\n適合度指標:");
+        Console.WriteLine($"  決定係数 (R²):       {bestResult.R2:F4}");
+        Console.WriteLine($"  平均二乗誤差 (MSE):  {bestResult.MSE:F2}");
+        Console.WriteLine($"  AIC:                 {bestResult.AIC:F2}");
+        Console.WriteLine($"  AICc:                {bestResult.AICc:F2}");
+        Console.WriteLine($"  選択基準:            {bestResult.ModelSelectionCriterion} = {bestResult.SelectionScore:F2}");
     }
     
     /// <summary>
