@@ -24,6 +24,16 @@
 - **感度分析**: パラメータの弾力性（Elasticity）を計算し、予測のロバスト性を評価
 - **堅牢な変化点検出**: プロファイル尤度法による客観的な変化点特定
 
+### 統計診断・検証機能
+
+- **残差診断**: 生残差・Pearson残差・Deviance残差の計算と分析
+  - **自己相関検定**: Durbin-Watson検定、Ljung-Box Q検定
+  - **正規性検定**: Jarque-Bera検定、Anderson-Darling検定
+  - **ランテスト**: 残差の独立性検証
+- **適合度検定**: χ²検定、Kolmogorov-Smirnov検定、Cramér-von Mises検定
+- **予測区間**: パラメトリックブートストラップによる信頼区間・予測区間の計算
+- **モデル平均化**: AIC重み付けによるマルチモデル推論（Burnham & Anderson 2002）
+
 ## 必要環境
 
 - .NET 8.0 SDK / Runtime
@@ -63,6 +73,9 @@ BugConvergenceTool <入力Excel> [オプション]
 | `--bootstrap N` | ブートストラップ反復回数（デフォルト: 200） |
 | `--loss TYPE` | 損失関数を指定（sse/mle） |
 | `--holdout-days N` | 末尾N日をホールドアウト検証に使用 |
+| `-d`, `--diagnostics` | 統計診断を実行（残差分析、自己相関、正規性、適合度検定） |
+| `--pi`, `--prediction-interval` | 予測区間を計算（パラメトリックブートストラップ） |
+| `--ma`, `--model-averaging` | モデル平均化を実行（AIC重み付け予測） |
 
 ### 使用例
 
@@ -96,6 +109,21 @@ BugConvergenceTool TestData.xlsx --loss mle --holdout-days 5 -v  # 組み合わ�
 
 # 組み合わせ
 BugConvergenceTool TestData.xlsx --optimizer auto --all-extended --ci --loss mle -o ./results -v
+
+# 統計診断を実行
+BugConvergenceTool TestData.xlsx -d                  # 残差診断・適合度検定
+BugConvergenceTool TestData.xlsx --diagnostics -v    # 詳細診断レポート
+
+# 予測区間を計算
+BugConvergenceTool TestData.xlsx --pi                # 予測区間（ブートストラップ）
+BugConvergenceTool TestData.xlsx --pi --bootstrap 500  # 反復回数を増やす
+
+# モデル平均化（マルチモデル推論）
+BugConvergenceTool TestData.xlsx --ma                # AIC重み付け予測
+BugConvergenceTool TestData.xlsx --ma -v             # 重みと不確実性を表示
+
+# 総合分析
+BugConvergenceTool TestData.xlsx --all-extended --loss mle --holdout-days 5 -d --pi --ma --ci -o ./results -v
 ```
 
 ## 入力Excelの形式
@@ -885,6 +913,167 @@ BugConvergenceTool TestData.xlsx --ci --bootstrap 500 -v
 - **軽量オプティマイザ**: ブートストラップでは Nelder-Mead を使用。初期値が元の最適解θ\*なので、局所探索で十分な場合が多い
 - **変化点モデル等の多峰性**: 局所極小が多いモデルでは、フォールバック率が高くなる可能性があります
 
+## 統計診断機能の詳細
+
+`-d`/`--diagnostics` オプションで、フィッティング結果の統計的妥当性を評価できます。
+
+### 診断項目
+
+#### 1. 残差分析
+
+| 残差タイプ | 計算式 | 用途 |
+|-----------|--------|------|
+| 生残差（Raw） | e\_i = y\_i - m(t\_i) | 基本的な乖離の確認 |
+| Pearson残差 | (y\_i - m(t\_i)) / √m(t\_i) | 分散安定化 |
+| Deviance残差 | sign(y\_i - m(t\_i)) √(2 × deviance\_i) | NHPPモデルに適合 |
+
+#### 2. 自己相関検定
+
+| 検定名 | 帰無仮説 | 統計量の目安 |
+|--------|---------|-------------|
+| Durbin-Watson | 1次自己相関なし | 2に近いほど良好（1.5〜2.5が許容範囲） |
+| Ljung-Box Q | ラグkまで自己相関なし | p値 > 0.05 で帰無仮説採択 |
+
+#### 3. 正規性検定
+
+| 検定名 | 対象 | 解釈 |
+|--------|------|------|
+| Jarque-Bera | 歪度・尖度 | p値 > 0.05 で正規性を支持 |
+| Anderson-Darling | 分布の裾 | p値 > 0.05 で正規性を支持 |
+
+#### 4. 適合度検定
+
+| 検定名 | 特徴 | 適用条件 |
+|--------|------|---------|
+| χ²検定 | 伝統的、区間データ | 期待度数 ≥ 5（Cochranの規則） |
+| Kolmogorov-Smirnov | 分布全体 | 連続分布 |
+| Cramér-von Mises | 裾に敏感 | 連続分布 |
+
+### 診断グレード
+
+診断結果は0〜100のスコアと5段階のグレードで評価されます：
+
+| グレード | スコア | 意味 |
+|---------|-------|------|
+| Excellent | 90〜100 | モデル仮定が十分に満たされている |
+| Good | 75〜89 | 軽微な問題があるが実用上問題なし |
+| Acceptable | 60〜74 | 注意が必要だが使用可能 |
+| Caution | 40〜59 | モデル選択の再検討を推奨 |
+| Poor | 0〜39 | モデルが不適切、再検討必須 |
+
+### 診断の実行例
+
+```bash
+# 診断を実行
+BugConvergenceTool TestData.xlsx -d
+
+# 詳細出力
+BugConvergenceTool TestData.xlsx -d -v
+```
+
+### 出力例
+
+```text
+=== 診断レポート: 遅延S字型 ===
+診断スコア: 78/100 (Good)
+
+[残差分析]
+  残差タイプ: Pearson
+  平均: 0.023 (理想: 0)
+  標準偏差: 1.12
+  ラン検定 p値: 0.342 (独立性: OK)
+
+[自己相関]
+  Durbin-Watson: 1.87 (許容範囲内)
+  Ljung-Box Q(10) p値: 0.156 (自己相関なし)
+
+[正規性]
+  Jarque-Bera p値: 0.234 (正規性を支持)
+  Anderson-Darling p値: 0.198 (正規性を支持)
+
+[適合度]
+  χ² p値: 0.089 (適合)
+  KS p値: 0.312 (適合)
+```
+
+## 予測区間の詳細
+
+`--pi`/`--prediction-interval` オプションで、将来の観測値に対する予測区間を計算できます。
+
+### 信頼区間との違い
+
+| 区間タイプ | 対象 | 不確実性の源泉 |
+|-----------|------|---------------|
+| 信頼区間 | 期待値 m(t) | パラメータ推定誤差のみ |
+| 予測区間 | 将来の観測値 Y(t) | パラメータ推定誤差 + 観測のばらつき |
+
+予測区間は常に信頼区間より広くなります。
+
+### アルゴリズム
+
+1. **パラメトリックブートストラップ**
+   - 推定パラメータ θ\* からPoisson過程でデータを再生成
+   - 再生成データに対してモデルを再フィッティング
+   - 多数（デフォルト: 200回）繰り返し
+
+2. **区間の計算**
+   - 各時点でブートストラップ予測値の分位点を計算
+   - 95%予測区間: 2.5%〜97.5%分位点
+
+### 予測区間の計算例
+
+```bash
+# 予測区間を計算
+BugConvergenceTool TestData.xlsx --pi
+
+# 反復回数を増やして精度向上
+BugConvergenceTool TestData.xlsx --pi --bootstrap 500 -v
+```
+
+## モデル平均化の詳細
+
+`--ma`/`--model-averaging` オプションで、複数モデルのAIC重み付け平均予測を実行できます。
+
+### 理論的背景
+
+単一の「最良」モデルを選択する代わりに、複数のモデルからの予測を重み付け平均することで、モデル選択の不確実性を予測に反映させます（Burnham & Anderson, 2002）。
+
+### AIC重みの計算
+
+$$
+w_i = \frac{\exp(-\Delta_i / 2)}{\sum_j \exp(-\Delta_j / 2)}
+$$
+
+ここで $\Delta_i = AIC_i - AIC_{min}$ です。
+
+### 出力内容
+
+```text
+=== モデル平均化結果 ===
+
+[モデル重み]
+  遅延S字型:     0.412
+  ゴンペルツ:    0.298
+  指数型:        0.187
+  修正ゴンペルツ: 0.103
+
+[収束予測（重み付け平均）]
+  推定総バグ数:  156.3 ± 12.8
+  90%収束日:     Day 45 ± 3.2日
+  95%収束日:     Day 52 ± 4.1日
+  99%収束日:     Day 68 ± 6.5日
+
+[不確実性の内訳]
+  パラメータ不確実性: 65%
+  モデル不確実性:     35%
+```
+
+### モデル平均化の注意点
+
+- 重みが0.9以上のモデルが存在する場合、実質的にそのモデルが支配的
+- 複数モデルが同程度の重みを持つ場合、モデル不確実性が大きい
+- 全拡張モデル（`--all-extended`）と組み合わせると、より多様なモデルで平均化
+
 ## ライセンス
 
 MIT License
@@ -906,3 +1095,7 @@ MIT License
 - Test Effort Functions in SRGM
 - Fault Removal Efficiency Models
 - Metaheuristic Optimization for Parameter Estimation
+- Residual Diagnostics for Count Data (Durbin-Watson, Ljung-Box)
+- Normality Tests (Jarque-Bera, Anderson-Darling)
+- Goodness-of-Fit Tests for NHPP (χ², KS, Cramér-von Mises)
+- Model Averaging and Multi-Model Inference (Burnham & Anderson, 2002)

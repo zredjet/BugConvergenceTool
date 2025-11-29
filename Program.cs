@@ -1,6 +1,7 @@
 using BugConvergenceTool.Models;
 using BugConvergenceTool.Optimizers;
 using BugConvergenceTool.Services;
+using BugConvergenceTool.Services.Diagnostics;
 
 namespace BugConvergenceTool;
 
@@ -177,6 +178,64 @@ class Program
         
         // 3. 結果表示
         PrintResults(results, bestResult, testData, options.Verbose);
+        
+        // 3.3. 統計診断の実行（Phase 1-2）
+        if (options.RunDiagnostics)
+        {
+            Console.WriteLine("\n統計診断を実行中...");
+            var diagnosticGenerator = new DiagnosticReportGenerator();
+            var gofTest = new GoodnessOfFitTest();
+            var tData = testData.GetTimeData();
+            var yData = testData.GetCumulativeBugsFound();
+            
+            // ベストモデルの診断
+            var bestModel = GetModelByName(bestResult.ModelName);
+            if (bestModel != null)
+            {
+                try
+                {
+                    // 残差診断
+                    bestResult.Diagnostics = diagnosticGenerator.Generate(
+                        bestModel, tData, yData, bestResult.ParameterVector);
+                    
+                    // 適合度検定
+                    bestResult.GoodnessOfFit = gofTest.Test(
+                        bestModel, tData, yData, bestResult.ParameterVector);
+                    
+                    // 診断レポートを表示
+                    Console.WriteLine(DiagnosticReportGenerator.FormatReport(bestResult.Diagnostics));
+                    
+                    // 適合度検定結果を表示
+                    Console.WriteLine($"【適合度検定】{bestResult.GoodnessOfFit.OverallAssessment}");
+                    Console.WriteLine($"  χ²検定: χ²={bestResult.GoodnessOfFit.ChiSquareStatistic:F2} (df={bestResult.GoodnessOfFit.ChiSquareDegreesOfFreedom}, p={bestResult.GoodnessOfFit.ChiSquarePValue:F4})");
+                    Console.WriteLine($"  KS検定: D={bestResult.GoodnessOfFit.KsStatistic:F4} (p={bestResult.GoodnessOfFit.KsPValue:F4})");
+                    Console.WriteLine($"  CvM検定: W²={bestResult.GoodnessOfFit.CramerVonMisesStatistic:F4} (p={bestResult.GoodnessOfFit.CramerVonMisesPValue:F4})");
+                    Console.WriteLine();
+                }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"  診断の実行に失敗: {ex.Message}");
+                    Console.ResetColor();
+                }
+            }
+        }
+        
+        // 3.4. モデル平均化（Phase 4）
+        ModelAveragingResult? averagingResult = null;
+        if (options.UseModelAveraging)
+        {
+            Console.WriteLine("\nモデル平均化を実行中...");
+            var averagingService = new ModelAveragingService();
+            var models = GetAllModelsAsDictionary(options);
+            var predictionTimes = testData.GetTimeData();
+            
+            averagingResult = averagingService.Average(
+                results, models, predictionTimes, testData.DayCount);
+            
+            // 結果を表示
+            Console.WriteLine(ModelAveragingService.FormatResult(averagingResult));
+        }
         
         // 3.5. 警告メッセージの生成と表示
         var warnings = WarningService.GenerateAllWarnings(
@@ -411,6 +470,35 @@ class Program
             ?? ModelFactory.GetAllModels().FirstOrDefault(m => m.Name == modelName);
     }
     
+    /// <summary>
+    /// コマンドオプションに基づいて全モデルを辞書形式で取得
+    /// </summary>
+    static Dictionary<string, ReliabilityGrowthModelBase> GetAllModelsAsDictionary(CommandOptions options)
+    {
+        var models = new List<ReliabilityGrowthModelBase>();
+        
+        if (options.AllExtended || options.IncludeChangePoint || options.IncludeTEF || options.IncludeFRE || options.IncludeCoverage)
+        {
+            models.AddRange(ModelFactory.GetAllExtendedModels(
+                options.IncludeChangePoint,
+                options.IncludeTEF,
+                options.IncludeFRE,
+                options.IncludeCoverage));
+        }
+        else
+        {
+            models.AddRange(ModelFactory.GetAllModels());
+            if (options.IncludeImperfectDebug)
+            {
+                models.AddRange(ModelFactory.GetAllModels().Where(m => m.Category.Contains("不完全")));
+            }
+        }
+        
+        return models
+            .GroupBy(m => m.Name)
+            .ToDictionary(g => g.Key, g => g.First());
+    }
+    
     static string FindTemplatePath()
     {
         // 実行ファイルと同じディレクトリ
@@ -541,6 +629,24 @@ class Program
                     if (i + 1 < args.Length && int.TryParse(args[++i], out int holdout))
                         options.HoldoutDays = Math.Max(0, holdout);
                     break;
+                
+                // 統計診断オプション（Phase 1-2）
+                case "--diagnostics":
+                case "-d":
+                    options.RunDiagnostics = true;
+                    break;
+                
+                // 予測区間オプション（Phase 3）
+                case "--prediction-interval":
+                case "--pi":
+                    options.CalculatePredictionInterval = true;
+                    break;
+                
+                // モデル平均化オプション（Phase 4）
+                case "--model-averaging":
+                case "--ma":
+                    options.UseModelAveraging = true;
+                    break;
                     
                 default:
                     if (!args[i].StartsWith("-"))
@@ -604,6 +710,14 @@ class Program
         Console.WriteLine("  --holdout-days N      末尾N日をホールドアウト検証に使用");
         Console.WriteLine("                        （訓練データで推定し、テストデータで予測精度を評価）");
         Console.WriteLine();
+        Console.WriteLine("統計診断オプション:");
+        Console.WriteLine("  -d, --diagnostics     残差診断・適合度検定を実行");
+        Console.WriteLine("                        （残差分析、自己相関検定、正規性検定、χ²検定、KS検定）");
+        Console.WriteLine("  --pi, --prediction-interval");
+        Console.WriteLine("                        予測区間を計算（パラメトリック・ブートストラップ）");
+        Console.WriteLine("  --ma, --model-averaging");
+        Console.WriteLine("                        AIC重みによるモデル平均化を実行");
+        Console.WriteLine();
         Console.WriteLine("使用例:");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx -o ./output");
@@ -656,4 +770,13 @@ class CommandOptions
     
     // ホールドアウト検証オプション
     public int HoldoutDays { get; set; } = 0;
+    
+    // 診断オプション（Phase 1-2）
+    public bool RunDiagnostics { get; set; } = false;
+    
+    // 予測区間オプション（Phase 3）
+    public bool CalculatePredictionInterval { get; set; } = false;
+    
+    // モデル平均化オプション（Phase 4）
+    public bool UseModelAveraging { get; set; } = false;
 }

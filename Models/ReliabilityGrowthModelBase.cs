@@ -1,4 +1,5 @@
 using BugConvergenceTool.Services;
+using BugConvergenceTool.Services.Diagnostics;
 
 namespace BugConvergenceTool.Models;
 
@@ -95,6 +96,30 @@ public class FittingResult
     /// 変化点探索結果（変化点モデルの場合のみ）
     /// </summary>
     public Services.ChangePointSearchResult? ChangePointSearchResult { get; set; }
+    
+    // ========================================
+    // 統計診断結果（Phase 1-2）
+    // ========================================
+    
+    /// <summary>
+    /// 残差診断結果
+    /// </summary>
+    public DiagnosticReport? Diagnostics { get; set; }
+    
+    /// <summary>
+    /// 適合度検定結果
+    /// </summary>
+    public GoodnessOfFitResult? GoodnessOfFit { get; set; }
+    
+    /// <summary>
+    /// 診断の総合評価グレード
+    /// </summary>
+    public DiagnosticGrade? DiagnosticGrade => Diagnostics?.OverallGrade;
+    
+    /// <summary>
+    /// 診断の総合評価スコア（0-100）
+    /// </summary>
+    public int? DiagnosticScore => Diagnostics?.OverallScore;
 }
 
 /// <summary>
