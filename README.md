@@ -26,7 +26,7 @@
 dotnet build -c Release
 
 # 発行（単一実行ファイル）
-dotnet publish -c Release -r win-x64 --self-contained
+dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true
 ```
 
 ## 使用方法
@@ -68,6 +68,9 @@ BugConvergenceTool TestData.xlsx --tef               # TEFモデル
 BugConvergenceTool TestData.xlsx --fre               # FREモデル
 BugConvergenceTool TestData.xlsx --all-extended      # 全拡張モデル
 BugConvergenceTool TestData.xlsx --all-extended -v   # 詳細出力付き
+
+# 組み合わせ
+BugConvergenceTool TestData.xlsx --optimizer auto --all-extended -o ./results -v
 ```
 
 ## 入力Excelの形式
