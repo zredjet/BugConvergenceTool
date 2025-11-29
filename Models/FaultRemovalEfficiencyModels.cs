@@ -122,24 +122,46 @@ public class LearningFREModel : FaultRemovalEfficiencyModelBase
     
     public override double CalculateCorrected(double t, double[] p)
     {
-        // 数値積分で計算（累積修正数）
+        // 適応的数値積分（Simpson法）で計算（累積修正数）
         // m_c(t) = ∫₀ᵗ η(s) · dm_d/ds · ds
         double a = p[0], b = p[1];
         double eta0 = p[2], etaInf = p[3], lambda = p[4];
         
-        int steps = 100;
-        double dt = t / steps;
-        double mc = 0;
+        // 適応的積分: tに応じてステップ数を調整
+        // 小さなtでは少ないステップで十分、大きなtでは精度確保のため増やす
+        int baseSteps = 50;
+        int additionalSteps = (int)Math.Ceiling(t * 10);  // tに比例して増加
+        int steps = Math.Min(500, Math.Max(baseSteps, baseSteps + additionalSteps));
         
+        double dt = t / steps;
+        
+        // Simpson法による積分（精度向上）
+        double mc = 0;
         for (int i = 0; i < steps; i++)
         {
-            double s = (i + 0.5) * dt;
-            double eta = etaInf - (etaInf - eta0) * Math.Exp(-lambda * s);
-            double dmdt = a * b * Math.Exp(-b * s);
-            mc += eta * dmdt * dt;
+            double s0 = i * dt;
+            double s1 = (i + 0.5) * dt;
+            double s2 = (i + 1) * dt;
+            
+            double f0 = IntegrandEtaDmdt(s0, a, b, eta0, etaInf, lambda);
+            double f1 = IntegrandEtaDmdt(s1, a, b, eta0, etaInf, lambda);
+            double f2 = IntegrandEtaDmdt(s2, a, b, eta0, etaInf, lambda);
+            
+            // Simpson則: ∫ = (dt/6) * (f0 + 4*f1 + f2)
+            mc += (dt / 6.0) * (f0 + 4.0 * f1 + f2);
         }
         
         return mc;
+    }
+    
+    /// <summary>
+    /// 積分の被積分関数: η(s) · dm_d/ds
+    /// </summary>
+    private static double IntegrandEtaDmdt(double s, double a, double b, double eta0, double etaInf, double lambda)
+    {
+        double eta = etaInf - (etaInf - eta0) * Math.Exp(-lambda * s);
+        double dmdt = a * b * Math.Exp(-b * s);
+        return eta * dmdt;
     }
     
     public override double GetFaultRemovalEfficiency(double t, double[] p)

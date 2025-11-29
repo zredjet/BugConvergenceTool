@@ -160,8 +160,10 @@ public class DEOptimizer : IOptimizer
                 
                 result.ConvergenceHistory.Add(bestFitness);
                 
-                // 収束判定
-                if (Math.Abs(previousBest - bestFitness) < _tolerance)
+                // 収束判定（相対収束）
+                double relativeChange = Math.Abs(previousBest - bestFitness) / 
+                                        (Math.Abs(previousBest) + 1e-10);
+                if (relativeChange < _tolerance)
                 {
                     stagnationCount++;
                     if (stagnationCount > 50)

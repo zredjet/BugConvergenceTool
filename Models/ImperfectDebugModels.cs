@@ -55,63 +55,6 @@ public class ImperfectDebugExponentialModel : ReliabilityGrowthModelBase
 }
 
 /// <summary>
-/// 修正S字型不完全デバッグモデル
-/// テスト初期の習熟と不完全デバッグを同時に考慮
-/// </summary>
-public class ImperfectDebugSModel : ReliabilityGrowthModelBase
-{
-    public override string Name => "修正S字型不完全デバッグ";
-    public override string Category => "不完全デバッグ";
-    public override string Formula => "遅延S字 × 補正項";
-    public override string Description => "S字型基盤の不完全デバッグ統合モデル";
-    public override string[] ParameterNames => new[] { "a", "b", "p" };
-
-    public override double Calculate(double t, double[] parameters)
-    {
-        double a = parameters[0];
-        double b = parameters[1];
-        double p = parameters[2];
-        
-        double expBt = Math.Exp(-b * t);
-        double baseValue = a * (1 - (1 + b * t) * expBt);
-        double correction = 1 / (1 + p * (1 - expBt));
-        
-        return baseValue * correction;
-    }
-
-    public override double[] GetInitialParameters(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        int n = tData.Length;
-
-        // a: S字 + 不完全デバッグのため大きめのスケール
-        double last = yData[^1];
-        double prev = n > 1 ? yData[^2] : yData[^1];
-        double increment = last - prev;
-        bool isConverged = increment <= GetConvergenceThreshold();
-        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.6);  // S字+不完全デバッグは高めのスケール
-
-        // b: S字型用の設定から取得
-        double avgSlope = EstimateAverageSlope(yData);
-        double b0 = GetBValueSCurve(avgSlope);
-
-        // p: 設定から取得
-        double p0 = GetImperfectDebugP0();
-
-        return new[] { a0, b0, p0 };
-    }
-
-    public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        return (
-            new[] { maxY, 0.001, -0.5 },
-            new[] { maxY * 5, 1.0, 0.99 }
-        );
-    }
-}
-
-/// <summary>
 /// 一般化不完全デバッグモデル
 /// m(t) = a * (1 - exp(-b*t^c)) / (1 + p*(1 - exp(-b*t^c)))
 /// </summary>
@@ -255,7 +198,6 @@ public static class ModelFactory
     public static IEnumerable<ReliabilityGrowthModelBase> GetImperfectDebugModels()
     {
         yield return new ImperfectDebugExponentialModel();
-        yield return new ImperfectDebugSModel();
         yield return new GeneralizedImperfectDebugModel();
     }
     

@@ -524,17 +524,30 @@ public class ImperfectDebugExponentialChangePointModel : ChangePointModelBase
     /// <summary>
     /// 漸近的総欠陥数
     /// t→∞ で u(t)→∞ より m(∞) = a / (1 + p)
-    /// ただし p が負の場合は a に収束
     /// </summary>
+    /// <remarks>
+    /// p >= 1 の場合は漸近値が発散（または負になる）ため、上限を設定。
+    /// p が負の場合でも数学的には a / (1 + p) で正しく、
+    /// 例えば p = -0.2 なら漸近値は a / 0.8 = 1.25a となる。
+    /// </remarks>
     public override double GetAsymptoticTotalBugs(double[] parameters)
     {
         double a = parameters[0];
         double p = parameters[3];
 
-        if (p >= 0)
-            return a / (1 + p);
-        else
-            return a; // p < 0 の場合は a が上界
+        // p >= 1 の場合は分母が0以下となり発散するため、上限を設定
+        if (p >= 1.0)
+        {
+            // 警告: このパラメータ値では漸近値が定義されない
+            // 実務的な上限として a の大きな倍数を返す
+            return a * 100.0;
+        }
+
+        // p < 1 の全ケースで統一的に計算
+        // p < 0: 漸近値は a より大きくなる（新規欠陥導入効果）
+        // p = 0: 標準指数型と同じ（漸近値 = a）
+        // 0 < p < 1: 漸近値は a より小さくなる（不完全修正効果）
+        return a / (1.0 + p);
     }
 
     public override double Calculate(double t, double[] parameters)

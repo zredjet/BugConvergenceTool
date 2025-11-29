@@ -149,15 +149,31 @@ public class GompertzModel : ReliabilityGrowthModelBase
 }
 
 /// <summary>
-/// 修正ゴンペルツモデル
-/// m(t) = a * (c - exp(-b*t))
+/// 修正ゴンペルツモデル（ロジスティック型ゴンペルツ）
+/// m(t) = a / (1 + b * exp(-c*t))
 /// </summary>
+/// <remarks>
+/// <para>
+/// 標準的な修正ゴンペルツモデル（ロジスティック・ゴンペルツ型）。
+/// ソフトウェア信頼度成長モデルとして広く使用される形式です。
+/// </para>
+/// <para>
+/// 特徴:
+/// - t=0 で m(0) = a / (1 + b)
+/// - t→∞ で m(t) → a（漸近値）
+/// - b が大きいほど初期値が小さくなる（遅延効果）
+/// - c は収束速度を制御
+/// </para>
+/// <para>
+/// 参照: Ohba, M. (1984). Software Reliability Analysis Models.
+/// </para>
+/// </remarks>
 public class ModifiedGompertzModel : ReliabilityGrowthModelBase
 {
     public override string Name => "修正ゴンペルツ";
     public override string Category => "基本";
-    public override string Formula => "m(t) = a(c - e^(-bt))";
-    public override string Description => "S字カーブの柔軟性向上";
+    public override string Formula => "m(t) = a / (1 + b·e^(-ct))";
+    public override string Description => "ロジスティック型ゴンペルツ。初期遅延と収束を柔軟に表現";
     public override string[] ParameterNames => new[] { "a", "b", "c" };
 
     public override double Calculate(double t, double[] parameters)
@@ -165,17 +181,15 @@ public class ModifiedGompertzModel : ReliabilityGrowthModelBase
         double a = parameters[0];
         double b = parameters[1];
         double c = parameters[2];
-        return a * (c - Math.Exp(-b * t));
+        return a / (1 + b * Math.Exp(-c * t));
     }
     
     /// <summary>
-    /// 漸近的総欠陥数: t→∞ で m(t) → a*c
+    /// 漸近的総欠陥数: t→∞ で m(t) → a
     /// </summary>
     public override double GetAsymptoticTotalBugs(double[] parameters)
     {
-        double a = parameters[0];
-        double c = parameters[2];
-        return a * c;
+        return parameters[0];  // a
     }
 
     public override double[] GetInitialParameters(double[] tData, double[] yData)
@@ -183,23 +197,30 @@ public class ModifiedGompertzModel : ReliabilityGrowthModelBase
         double maxY = yData.Max();
         int n = tData.Length;
 
-        // a: 修正ゴンペルツでは a*c が漸近値なので a はやや控えめに
+        // a: 漸近値（総欠陥数）
         double last = yData[^1];
         double prev = n > 1 ? yData[^2] : yData[^1];
         double increment = last - prev;
         bool isConverged = increment <= GetConvergenceThreshold();
-        // 修正ゴンペルツはスケールを低めに（a*cが漸近値のため）
-        double a0 = isConverged ? maxY * 0.9 : maxY * 1.2;
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.3);
 
-        // c: 1.0〜2.0 の範囲で、累積50%到達タイミングが遅いほど大きめに
+        // b: 初期遅延係数。t=0でm(0)=a/(1+b)なので、初期値が小さいほどbは大きい
+        // 累積50%到達日が遅いほど初期遅延が大きいと判断
         double day50 = FindDayForCumulativeRatio(yData, 0.5);
         double nDouble = Math.Max(1.0, tData.Length);
-        double ratio = Math.Clamp(day50 / nDouble, 0.2, 0.9);
-        double c0 = 1.0 + (ratio - 0.2) / (0.9 - 0.2) * (2.0 - 1.0);
+        double ratio = Math.Clamp(day50 / nDouble, 0.2, 0.8);
+        // ratioが大きい（初期の立ち上がりが遅い）ほどbを大きく
+        double b0 = 1.0 + (ratio - 0.2) / (0.8 - 0.2) * 9.0;  // 1〜10の範囲
 
-        // b: 設定から取得
+        // c: 収束速度。平均増分から推定
         double avgSlope = EstimateAverageSlope(yData);
-        double b0 = GetBValueExponential(avgSlope);
+        double c0 = avgSlope switch
+        {
+            <= 0.1 => 0.05,
+            <= 0.5 => 0.1,
+            <= 1.0 => 0.2,
+            _ => 0.3
+        };
 
         return new[] { a0, b0, c0 };
     }
@@ -208,8 +229,8 @@ public class ModifiedGompertzModel : ReliabilityGrowthModelBase
     {
         double maxY = yData.Max();
         return (
-            new[] { 1.0, 0.001, 1.01 },
-            new[] { maxY * 5, 1.0, 2.0 }
+            new[] { maxY, 0.1, 0.001 },      // a >= maxY, b >= 0.1, c >= 0.001
+            new[] { maxY * 5, 50.0, 1.0 }    // a <= 5*maxY, b <= 50, c <= 1.0
         );
     }
 }

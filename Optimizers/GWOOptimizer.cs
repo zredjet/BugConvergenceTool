@@ -147,8 +147,10 @@ public class GWOOptimizer : IOptimizer
                 
                 result.ConvergenceHistory.Add(alphaFitness);
                 
-                // 収束判定
-                if (Math.Abs(previousBest - alphaFitness) < _tolerance)
+                // 収束判定（相対収束）
+                double relativeChange = Math.Abs(previousBest - alphaFitness) / 
+                                        (Math.Abs(previousBest) + 1e-10);
+                if (relativeChange < _tolerance)
                 {
                     stagnationCount++;
                     if (stagnationCount > 50)

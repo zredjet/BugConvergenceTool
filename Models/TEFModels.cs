@@ -39,16 +39,25 @@ public abstract class TEFBasedModelBase : ReliabilityGrowthModelBase
     
     /// <summary>
     /// TEFパラメータの初期値/境界用のデータを取得
-    /// 実測工数データがあればそれを、なければyData（フォールバック）を返す
     /// </summary>
+    /// <remarks>
+    /// TEFモデルは実測工数データが必須です。
+    /// 工数データがない場合に累積バグ数を代替として使用することは、
+    /// TEFモデルの理論的前提（テスト工数と欠陥検出の関係）を崩すため、
+    /// 学術的に不適切です。工数データがない場合は基本モデルを使用してください。
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">実測工数データがない場合</exception>
     protected double[] GetEffortDataForTEF(double[] yData)
     {
         if (ObservedEffortData != null && ObservedEffortData.Length > 0 && ObservedEffortData.Any(e => e > 0))
         {
             return ObservedEffortData;
         }
-        // フォールバック: 工数データがない場合は累積バグ数を代替として使用（疑似TEF動作）
-        return yData;
+        
+        throw new InvalidOperationException(
+            "TEFモデルには実測工数データが必要です。" +
+            "工数データが利用できない場合は、基本モデル（指数型、遅延S字型等）を使用してください。" +
+            "累積バグ数をテスト工数の代替として使用することは、TEFモデルの理論的前提を崩すため推奨されません。");
     }
 }
 

@@ -292,8 +292,10 @@ public class CMAESOptimizer : IOptimizer
                 result.ConvergenceHistory.Add(bestFitness);
                 
                 // 終了条件
-                // 停滞判定
-                if (Math.Abs(previousBest - bestFitness) < _tolerance)
+                // 停滞判定（相対収束）
+                double relativeChange = Math.Abs(previousBest - bestFitness) / 
+                                        (Math.Abs(previousBest) + 1e-10);
+                if (relativeChange < _tolerance)
                 {
                     stagnationCount++;
                     if (stagnationCount > 50)

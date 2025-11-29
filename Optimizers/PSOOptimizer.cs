@@ -170,8 +170,10 @@ public class PSOOptimizer : IOptimizer
                 
                 result.ConvergenceHistory.Add(globalBestFitness);
                 
-                // 収束判定
-                if (Math.Abs(previousBest - globalBestFitness) < _tolerance)
+                // 収束判定（相対収束）
+                double relativeChange = Math.Abs(previousBest - globalBestFitness) / 
+                                        (Math.Abs(previousBest) + 1e-10);
+                if (relativeChange < _tolerance)
                 {
                     stagnationCount++;
                     if (stagnationCount > 50)
