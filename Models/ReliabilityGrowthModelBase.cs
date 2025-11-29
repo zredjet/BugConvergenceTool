@@ -40,6 +40,32 @@ public class FittingResult
     // 95%信頼区間（ブートストラップ法で計算）
     public double[]? LowerConfidenceBounds { get; set; }
     public double[]? UpperConfidenceBounds { get; set; }
+    
+    // ホールドアウト検証結果（オプション）
+    /// <summary>
+    /// ホールドアウト検証の平均二乗誤差（MSE）
+    /// </summary>
+    public double? HoldoutMse { get; set; }
+    
+    /// <summary>
+    /// ホールドアウト検証の平均絶対パーセント誤差（MAPE）%
+    /// </summary>
+    public double? HoldoutMape { get; set; }
+    
+    /// <summary>
+    /// ホールドアウト検証の平均絶対誤差（MAE）
+    /// </summary>
+    public double? HoldoutMae { get; set; }
+    
+    /// <summary>
+    /// 使用した損失関数タイプ
+    /// </summary>
+    public string LossFunctionUsed { get; set; } = "SSE";
+    
+    /// <summary>
+    /// 警告メッセージのリスト
+    /// </summary>
+    public List<string> Warnings { get; set; } = new();
 }
 
 /// <summary>

@@ -17,8 +17,18 @@ public class ModelFitter
     private readonly double[]? _effortData;  // 累積工数データ（TEFモデル用）
     private readonly OptimizerType _optimizerType;
     private readonly bool _verbose;
+    private readonly LossType _lossType;
+    private readonly int _holdoutDays;
     
-    public ModelFitter(TestData testData, OptimizerType optimizerType = OptimizerType.DifferentialEvolution, bool verbose = false)
+    // ホールドアウト用のデータ分割結果
+    private TimeSeriesSplitResult? _splitResult;
+    
+    public ModelFitter(
+        TestData testData, 
+        OptimizerType optimizerType = OptimizerType.DifferentialEvolution, 
+        bool verbose = false,
+        LossType lossType = LossType.Sse,
+        int holdoutDays = 0)
     {
         _testData = testData;
         _tData = testData.GetTimeData();
@@ -31,6 +41,20 @@ public class ModelFitter
         
         _optimizerType = optimizerType;
         _verbose = verbose;
+        _lossType = lossType;
+        _holdoutDays = holdoutDays;
+        
+        // ホールドアウト検証用のデータ分割
+        if (holdoutDays > 0)
+        {
+            _splitResult = ValidationUtility.SplitLastNDays(_tData, _yData, holdoutDays);
+            if (_verbose && _splitResult.Warning != null)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  警告: {_splitResult.Warning}");
+                Console.ResetColor();
+            }
+        }
     }
     
     /// <summary>
@@ -52,8 +76,29 @@ public class ModelFitter
                 tefModel.ObservedEffortData = _effortData;
             }
             
-            // パラメータ推定（グリッドサーチ + 勾配降下法）
-            var parameters = EstimateParameters(model);
+            // 損失関数の取得（MLEサポートチェック付き）
+            var lossFunction = LossFunctionFactory.GetForModel(
+                _lossType, model, out var actualLossType, out var fallbackWarning);
+            
+            result.LossFunctionUsed = actualLossType == LossType.Mle ? "MLE" : "SSE";
+            
+            if (fallbackWarning != null)
+            {
+                result.Warnings.Add(fallbackWarning);
+                if (_verbose)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"  [{model.Name}] {fallbackWarning}");
+                    Console.ResetColor();
+                }
+            }
+            
+            // 訓練データの決定（ホールドアウトの有無で切り替え）
+            double[] trainT = _splitResult?.TrainTimes ?? _tData;
+            double[] trainY = _splitResult?.TrainValues ?? _yData;
+            
+            // パラメータ推定
+            var parameters = EstimateParameters(model, trainT, trainY, lossFunction);
             
             if (parameters == null)
             {
@@ -71,14 +116,20 @@ public class ModelFitter
             // 信頼区間計算用：パラメータベクトル（順序を保持）
             result.ParameterVector = (double[])parameters.Clone();
             
-            // 予測時刻と予測値を計算
+            // 予測時刻と予測値を計算（全データに対して）
             result.PredictionTimes = (double[])_tData.Clone();
             result.PredictedValues = _tData.Select(t => model.Calculate(t, parameters)).ToArray();
             
-            // 適合度指標を計算
+            // 適合度指標を計算（全データに対して）
             result.R2 = model.CalculateR2(_tData, _yData, parameters);
             result.MSE = model.CalculateSSE(_tData, _yData, parameters) / _tData.Length;
             result.AIC = model.CalculateAIC(_tData, _yData, parameters);
+            
+            // ホールドアウト検証
+            if (_splitResult != null && _splitResult.IsValid)
+            {
+                PerformHoldoutValidation(model, parameters, result);
+            }
             
             // 収束予測を計算
             CalculateConvergencePredictions(model, parameters, result);
@@ -92,6 +143,32 @@ public class ModelFitter
         }
         
         return result;
+    }
+    
+    /// <summary>
+    /// ホールドアウト検証を実行
+    /// </summary>
+    private void PerformHoldoutValidation(ReliabilityGrowthModelBase model, double[] parameters, FittingResult result)
+    {
+        if (_splitResult == null || !_splitResult.IsValid) return;
+        
+        // テストデータに対する予測
+        var predictions = _splitResult.TestTimes.Select(t => model.Calculate(t, parameters)).ToArray();
+        
+        // 評価指標の計算
+        var validation = ValidationUtility.CalculateMetrics(predictions, _splitResult.TestValues);
+        
+        result.HoldoutMse = validation.Mse;
+        result.HoldoutMape = validation.Mape;
+        result.HoldoutMae = validation.Mae;
+        
+        // 警告を追加
+        result.Warnings.AddRange(validation.Warnings);
+        
+        if (_verbose)
+        {
+            Console.WriteLine($"    -> ホールドアウト検証: MSE={validation.Mse:F4}, MAPE={validation.Mape:F2}%");
+        }
     }
     
     /// <summary>
@@ -122,22 +199,27 @@ public class ModelFitter
     /// <summary>
     /// パラメータ推定（選択されたオプティマイザを使用）
     /// </summary>
-    private double[]? EstimateParameters(ReliabilityGrowthModelBase model)
+    private double[]? EstimateParameters(
+        ReliabilityGrowthModelBase model,
+        double[] tData,
+        double[] yData,
+        ILossFunction lossFunction)
     {
-        var (lower, upper) = model.GetBounds(_tData, _yData);
-        var initial = model.GetInitialParameters(_tData, _yData);
+        var (lower, upper) = model.GetBounds(tData, yData);
+        var initial = model.GetInitialParameters(tData, yData);
         
-        // 目的関数（SSE最小化）
-        // FREモデルの場合は発見数SSE + 修正数SSEの合計を最小化
+        // 目的関数の構築
+        // FREモデルの場合は発見数SSE + 修正数SSEの合計を最小化（損失関数切り替えは非対応）
         Func<double[], double> objective;
         
         if (model is FaultRemovalEfficiencyModelBase freModel)
         {
-            objective = p => CalculateFREObjective(freModel, p);
+            objective = p => CalculateFREObjective(freModel, p, tData);
         }
         else
         {
-            objective = p => model.CalculateSSE(_tData, _yData, p);
+            // 指定された損失関数を使用
+            objective = p => lossFunction.Evaluate(tData, yData, model, p);
         }
         
         OptimizationResult result;
@@ -161,7 +243,8 @@ public class ModelFitter
         
         if (_verbose && result.Success)
         {
-            Console.WriteLine($"    -> SSE={result.ObjectiveValue:F4}, " +
+            string lossName = _lossType == LossType.Mle ? "NLL" : "SSE";
+            Console.WriteLine($"    -> {lossName}={result.ObjectiveValue:F4}, " +
                 $"評価回数={result.FunctionEvaluations}, 時間={result.ElapsedMilliseconds}ms");
         }
         
@@ -171,20 +254,23 @@ public class ModelFitter
     /// <summary>
     /// FREモデル用の目的関数（発見数SSE + 修正数SSE）
     /// </summary>
-    private double CalculateFREObjective(FaultRemovalEfficiencyModelBase model, double[] parameters)
+    private double CalculateFREObjective(FaultRemovalEfficiencyModelBase model, double[] parameters, double[] tData)
     {
         double sseDetected = 0;
         double sseCorrected = 0;
         
-        for (int i = 0; i < _tData.Length; i++)
+        // ホールドアウト時は訓練データのみを使用
+        int endIndex = tData.Length;
+        
+        for (int i = 0; i < endIndex; i++)
         {
             // 発見数の残差
-            double predictedDetected = model.CalculateDetected(_tData[i], parameters);
+            double predictedDetected = model.CalculateDetected(tData[i], parameters);
             double residualDetected = _yData[i] - predictedDetected;
             sseDetected += residualDetected * residualDetected;
             
             // 修正数の残差
-            double predictedCorrected = model.CalculateCorrected(_tData[i], parameters);
+            double predictedCorrected = model.CalculateCorrected(tData[i], parameters);
             double residualCorrected = _yFixedData[i] - predictedCorrected;
             sseCorrected += residualCorrected * residualCorrected;
         }

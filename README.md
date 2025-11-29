@@ -15,6 +15,12 @@
 - **Excel形式での結果出力**
 - **詳細なテキストレポート**出力
 
+### 推定・検証機能
+
+- **損失関数の選択**: SSE（残差二乗和）またはMLE（最尤推定、Poisson-NHPP）
+- **ホールドアウト検証**: 末尾N日をテスト用に分割し、予測精度（MSE/MAPE）を評価
+- **警告メッセージシステム**: データ品質やモデル選択に関する注意点を自動生成
+
 ## 必要環境
 
 - .NET 8.0 SDK / Runtime
@@ -52,6 +58,8 @@ BugConvergenceTool <入力Excel> [オプション]
 | `--all-extended` | 全拡張モデルを含める |
 | `--ci`, `--confidence-interval` | 95%信頼区間を計算（ブートストラップ法） |
 | `--bootstrap N` | ブートストラップ反復回数（デフォルト: 200） |
+| `--loss TYPE` | 損失関数を指定（sse/mle） |
+| `--holdout-days N` | 末尾N日をホールドアウト検証に使用 |
 
 ### 使用例
 
@@ -78,8 +86,13 @@ BugConvergenceTool TestData.xlsx --all-extended -v   # 詳細出力付き
 BugConvergenceTool TestData.xlsx --ci                # 95%信頼区間を計算
 BugConvergenceTool TestData.xlsx --ci --bootstrap 500  # 反復回数を増やして精度向上
 
+# 損失関数とホールドアウト検証
+BugConvergenceTool TestData.xlsx --loss mle          # MLE（最尤推定）を使用
+BugConvergenceTool TestData.xlsx --holdout-days 5    # 末尾5日でホールドアウト検証
+BugConvergenceTool TestData.xlsx --loss mle --holdout-days 5 -v  # 組み合わせ
+
 # 組み合わせ
-BugConvergenceTool TestData.xlsx --optimizer auto --all-extended --ci -o ./results -v
+BugConvergenceTool TestData.xlsx --optimizer auto --all-extended --ci --loss mle -o ./results -v
 ```
 
 ## 入力Excelの形式
@@ -263,6 +276,84 @@ u(t) = b₁·τ + b₂·(t-τ) （t > τ）
 | a | [maxY, maxY×100] | 総バグ数 |
 | β | [0.001, 5.0] | 増加率 |
 | τ | [1, n] | 変曲点時刻（n=データ点数） |
+
+## 損失関数
+
+パラメータ推定に使用する損失関数を選択できます。
+
+### SSE（残差二乗和）- デフォルト
+
+従来の最小二乗法です。累積バグ数に対する残差の二乗和を最小化します。
+
+```text
+SSE = Σ(yᵢ - m(tᵢ; θ))²
+```
+
+- **メリット**: 計算が安定、外れ値に敏感で異常検出に有用
+- **デメリット**: 確率的な解釈が難しい
+
+### MLE（最尤推定）- Poisson-NHPP
+
+日次バグ数がポアソン分布に従うと仮定した最尤推定です。非斉次ポアソン過程（NHPP）に基づく負の対数尤度を最小化します。
+
+```text
+NLL = Σ(λᵢ - yᵢ·log(λᵢ))
+where λᵢ = m(tᵢ) - m(tᵢ₋₁)  （期待される日次バグ数）
+```
+
+- **メリット**: 確率論的に正しい推定、信頼区間との親和性が高い
+- **デメリット**: 日次バグ数が0の日が多いとやや不安定
+
+### 対応モデル
+
+| 損失関数 | 対応モデル |
+|---------|-----------|
+| SSE | 全モデル |
+| MLE | 基本モデル5種（指数型、遅延S字型、ゴンペルツ、修正ゴンペルツ、ロジスティック） |
+
+※ MLEがサポートされていないモデルで `--loss mle` を指定した場合、自動的にSSEにフォールバックします。
+
+## ホールドアウト検証
+
+予測的妥当性を評価するための機能です。データの末尾N日をテスト用に分割し、残りのデータでパラメータを推定した後、テスト期間の予測精度を評価します。
+
+### 評価指標
+
+| 指標 | 説明 |
+|------|------|
+| MSE（Mean Squared Error） | 平均二乗誤差。値が小さいほど良い |
+| MAE（Mean Absolute Error） | 平均絶対誤差。値が小さいほど良い |
+| MAPE（Mean Absolute Percentage Error） | 平均絶対パーセント誤差（%）。値が小さいほど良い |
+
+### ホールドアウトの使用方法
+
+```bash
+# 末尾5日をテスト用に使用
+BugConvergenceTool TestData.xlsx --holdout-days 5
+
+# MLE推定と組み合わせ
+BugConvergenceTool TestData.xlsx --loss mle --holdout-days 5 -v
+```
+
+### ホールドアウトの出力
+
+- **コンソール**: 各モデルのホールドアウト検証結果（MSE, MAPE）を表示
+- **Excel**: `Holdout_MSE`, `Holdout_MAPE(%)` 列を追加
+- **テキストレポート**: 警告セクションにMAPEが高い場合の注意を記載
+
+### 警告メッセージ
+
+以下の条件で自動的に警告が生成されます：
+
+| 条件 | 警告内容 |
+|------|---------|
+| データ点数 < 7 | パラメータ推定が不安定になる可能性 |
+| データ点数 < パラメータ数×3 | 過適合のリスク |
+| 総バグ数 < 20 | モデル評価の信頼性が限定的 |
+| MAPE > 50% | 将来予測の不確実性が高い |
+| MAPE > 100% | モデルの将来予測は信頼できない可能性 |
+| 選択モデルのMAPEが他より明らかに高い | 予測性能が低い可能性 |
+| R² < 0.9 | データへの当てはまりが不十分 |
 
 ## 最適化アルゴリズム
 

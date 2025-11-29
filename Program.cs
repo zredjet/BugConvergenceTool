@@ -76,6 +76,13 @@ class Program
         if (testData.StartDate.HasValue)
             Console.WriteLine($"テスト開始日: {testData.StartDate.Value:yyyy/MM/dd}");
         Console.WriteLine($"オプティマイザ: {options.Optimizer}");
+        Console.WriteLine($"損失関数: {(options.LossFunction == LossType.Mle ? "MLE (最尤推定)" : "SSE (残差二乗和)")}");
+        
+        // ホールドアウト検証の表示
+        if (options.HoldoutDays > 0)
+        {
+            Console.WriteLine($"ホールドアウト検証: 末尾 {options.HoldoutDays} 日");
+        }
         
         // 使用モデルの表示
         var modelTypes = new List<string> { "基本" };
@@ -89,7 +96,12 @@ class Program
         
         // 2. モデルフィッティング
         Console.WriteLine("モデルフィッティング中...");
-        var fitter = new ModelFitter(testData, options.Optimizer, options.Verbose);
+        var fitter = new ModelFitter(
+            testData, 
+            options.Optimizer, 
+            options.Verbose,
+            options.LossFunction,
+            options.HoldoutDays);
         
         List<FittingResult> results;
         if (options.AllExtended || options.IncludeChangePoint || options.IncludeTEF || options.IncludeFRE || options.IncludeCoverage)
@@ -166,6 +178,14 @@ class Program
         // 3. 結果表示
         PrintResults(results, bestResult, options.Verbose);
         
+        // 3.5. 警告メッセージの生成と表示
+        var warnings = WarningService.GenerateAllWarnings(
+            bestResult,
+            results,
+            testData.DayCount,
+            testData.GetCumulativeBugsFound().LastOrDefault());
+        WarningService.PrintWarnings(warnings);
+        
         // 4. 出力ディレクトリ作成
         string outputDir = options.OutputDir ?? Path.GetDirectoryName(options.InputFile) ?? ".";
         string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
@@ -184,7 +204,7 @@ class Program
         // 6. テキストレポート出力
         string reportPath = $"{outputBase}.txt";
         var reportGen = new ReportGenerator(testData);
-        reportGen.SaveReport(reportPath, results, bestResult);
+        reportGen.SaveReport(reportPath, results, bestResult, warnings);
         Console.WriteLine($"レポート出力: {reportPath}");
         
         // 7. グラフ画像出力
@@ -198,16 +218,90 @@ class Program
         return 0;
     }
     
+    /// <summary>
+    /// 文字列の表示幅を計算（全角文字は2、半角文字は1）
+    /// </summary>
+    static int GetDisplayWidth(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return 0;
+        int width = 0;
+        foreach (char c in s)
+        {
+            // 全角文字（日本語、中国語、記号等）は幅2、それ以外は幅1
+            width += IsFullWidth(c) ? 2 : 1;
+        }
+        return width;
+    }
+    
+    /// <summary>
+    /// 全角文字かどうかを判定
+    /// </summary>
+    static bool IsFullWidth(char c)
+    {
+        // CJK文字、全角記号、ひらがな、カタカナなど
+        return (c >= 0x1100 && c <= 0x115F) ||  // Hangul Jamo
+               (c >= 0x2E80 && c <= 0x9FFF) ||  // CJK
+               (c >= 0xAC00 && c <= 0xD7A3) ||  // Hangul Syllables
+               (c >= 0xF900 && c <= 0xFAFF) ||  // CJK Compatibility Ideographs
+               (c >= 0xFE10 && c <= 0xFE1F) ||  // Vertical Forms
+               (c >= 0xFE30 && c <= 0xFE6F) ||  // CJK Compatibility Forms
+               (c >= 0xFF00 && c <= 0xFF60) ||  // Fullwidth Forms
+               (c >= 0xFFE0 && c <= 0xFFE6) ||  // Fullwidth Forms
+               (c >= 0x3000 && c <= 0x303F) ||  // CJK Symbols and Punctuation
+               (c >= 0x3040 && c <= 0x309F) ||  // Hiragana
+               (c >= 0x30A0 && c <= 0x30FF) ||  // Katakana
+               (c >= 0x31F0 && c <= 0x31FF);    // Katakana Phonetic Extensions
+    }
+    
+    /// <summary>
+    /// 文字列を指定幅に左寄せでパディング
+    /// </summary>
+    static string PadRightByWidth(string s, int totalWidth)
+    {
+        int currentWidth = GetDisplayWidth(s);
+        int padding = totalWidth - currentWidth;
+        return padding > 0 ? s + new string(' ', padding) : s;
+    }
+    
+    /// <summary>
+    /// 文字列を指定幅に右寄せでパディング
+    /// </summary>
+    static string PadLeftByWidth(string s, int totalWidth)
+    {
+        int currentWidth = GetDisplayWidth(s);
+        int padding = totalWidth - currentWidth;
+        return padding > 0 ? new string(' ', padding) + s : s;
+    }
+    
     static void PrintResults(List<FittingResult> results, FittingResult bestResult, bool verbose = false)
     {
         Console.WriteLine("\n=== モデル比較結果 ===\n");
         
+        // ホールドアウト検証の有無を判定
+        bool hasHoldout = results.Any(r => r.HoldoutMse.HasValue);
+        
+        // カラム幅の定義
+        const int colModel = 28;
+        const int colCategory = 14;
+        const int colNum = 10;
+        
         // ヘッダー
-        if (verbose)
-            Console.WriteLine($"{"モデル名",-25} {"カテゴリ",-12} {"R²",10} {"AIC",10} {"潜在バグ",10} {"時間(ms)",10}");
+        if (hasHoldout)
+        {
+            if (verbose)
+                Console.WriteLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {"R²",colNum} {"AIC",colNum} {"MAPE(%)",colNum} {"潜在バグ",colNum} {"時間(ms)",colNum}");
+            else
+                Console.WriteLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {"R²",colNum} {"AIC",colNum} {"MAPE(%)",colNum} {"潜在バグ",colNum}");
+            Console.WriteLine(new string('-', verbose ? 105 : 92));
+        }
         else
-            Console.WriteLine($"{"モデル名",-25} {"カテゴリ",-12} {"R²",10} {"AIC",10} {"潜在バグ",10}");
-        Console.WriteLine(new string('-', verbose ? 85 : 70));
+        {
+            if (verbose)
+                Console.WriteLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {"R²",colNum} {"AIC",colNum} {"潜在バグ",colNum} {"時間(ms)",colNum}");
+            else
+                Console.WriteLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {"R²",colNum} {"AIC",colNum} {"潜在バグ",colNum}");
+            Console.WriteLine(new string('-', verbose ? 93 : 80));
+        }
         
         foreach (var result in results.Where(r => r.Success).OrderBy(r => r.AIC))
         {
@@ -219,21 +313,57 @@ class Program
                 Console.ForegroundColor = ConsoleColor.Yellow;
             
             string marker = isBest ? " *" : "";
-            if (verbose)
-                Console.WriteLine($"{result.ModelName + marker,-25} {result.Category,-12} {result.R2,10:F4} {result.AIC,10:F2} {result.EstimatedTotalBugs,10:F1} {result.OptimizationTimeMs,10}");
+            string modelNameWithMarker = result.ModelName + marker;
+            string mapeStr = result.HoldoutMape.HasValue ? $"{result.HoldoutMape:F2}" : "-";
+            
+            if (hasHoldout)
+            {
+                if (verbose)
+                    Console.WriteLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.AIC,colNum:F2} {mapeStr,colNum} {result.EstimatedTotalBugs,colNum:F1} {result.OptimizationTimeMs,colNum}");
+                else
+                    Console.WriteLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.AIC,colNum:F2} {mapeStr,colNum} {result.EstimatedTotalBugs,colNum:F1}");
+            }
             else
-                Console.WriteLine($"{result.ModelName + marker,-25} {result.Category,-12} {result.R2,10:F4} {result.AIC,10:F2} {result.EstimatedTotalBugs,10:F1}");
+            {
+                if (verbose)
+                    Console.WriteLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.AIC,colNum:F2} {result.EstimatedTotalBugs,colNum:F1} {result.OptimizationTimeMs,colNum}");
+                else
+                    Console.WriteLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.AIC,colNum:F2} {result.EstimatedTotalBugs,colNum:F1}");
+            }
             
             Console.ResetColor();
         }
         
         Console.WriteLine("\n* = 推奨モデル（AIC最小）");
         
+        // ホールドアウト検証サマリー
+        if (hasHoldout)
+        {
+            Console.WriteLine("\n=== ホールドアウト検証結果 ===\n");
+            var bestByMape = results.Where(r => r.Success && r.HoldoutMape.HasValue)
+                                    .OrderBy(r => r.HoldoutMape!.Value)
+                                    .FirstOrDefault();
+            if (bestByMape != null)
+            {
+                Console.WriteLine($"予測精度最良モデル（MAPE最小）: {bestByMape.ModelName} (MAPE={bestByMape.HoldoutMape:F2}%)");
+            }
+            
+            // 警告の表示
+            var modelsWithHighMape = results.Where(r => r.Success && r.HoldoutMape > 50).ToList();
+            if (modelsWithHighMape.Any())
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"注意: {modelsWithHighMape.Count}個のモデルでMAPE > 50%（予測精度が低い可能性）");
+                Console.ResetColor();
+            }
+        }
+        
         // 収束予測
         Console.WriteLine($"\n=== 収束予測（{bestResult.ModelName}）===\n");
         
         Console.WriteLine($"推定潜在バグ総数: {bestResult.EstimatedTotalBugs:F1} 件");
         Console.WriteLine($"残り推定バグ数: {bestResult.EstimatedTotalBugs - bestResult.PredictedValues.Last():F1} 件");
+        Console.WriteLine($"使用損失関数: {bestResult.LossFunctionUsed}");
         Console.WriteLine();
         
         foreach (var (name, pred) in bestResult.ConvergencePredictions)
@@ -382,6 +512,27 @@ class Program
                     if (i + 1 < args.Length && int.TryParse(args[++i], out int bootIter))
                         options.BootstrapIterations = Math.Max(50, bootIter);
                     break;
+                
+                // 損失関数オプション
+                case "--loss":
+                    if (i + 1 < args.Length)
+                    {
+                        string loss = args[++i].ToLower();
+                        options.LossFunction = loss switch
+                        {
+                            "mle" => LossType.Mle,
+                            "sse" => LossType.Sse,
+                            _ => LossType.Sse
+                        };
+                    }
+                    break;
+                
+                // ホールドアウト検証オプション
+                case "--holdout-days":
+                case "--holdout":
+                    if (i + 1 < args.Length && int.TryParse(args[++i], out int holdout))
+                        options.HoldoutDays = Math.Max(0, holdout);
+                    break;
                     
                 default:
                     if (!args[i].StartsWith("-"))
@@ -438,12 +589,20 @@ class Program
         Console.WriteLine("                        95%信頼区間を計算（ブートストラップ法）");
         Console.WriteLine("  --bootstrap N         ブートストラップ反復回数（デフォルト: 200）");
         Console.WriteLine();
+        Console.WriteLine("推定・検証オプション:");
+        Console.WriteLine("  --loss TYPE           損失関数を指定:");
+        Console.WriteLine("                          sse - 残差二乗和（デフォルト）");
+        Console.WriteLine("                          mle - 最尤推定（Poisson-NHPP）");
+        Console.WriteLine("  --holdout-days N      末尾N日をホールドアウト検証に使用");
+        Console.WriteLine("                        （訓練データで推定し、テストデータで予測精度を評価）");
+        Console.WriteLine();
         Console.WriteLine("使用例:");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx -o ./output");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx --optimizer pso");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx --change-point --fre");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx --all-extended -v");
+        Console.WriteLine("  BugConvergenceTool TestData.xlsx --loss mle --holdout-days 5");
         Console.WriteLine();
         Console.WriteLine("入力Excelの形式:");
         Console.WriteLine("  「データ入力」シートに以下の形式でデータを配置:");
@@ -483,4 +642,10 @@ class CommandOptions
     // 信頼区間オプション
     public bool CalculateConfidenceInterval { get; set; } = false;
     public int BootstrapIterations { get; set; } = 200;
+    
+    // 損失関数オプション
+    public LossType LossFunction { get; set; } = LossType.Sse;
+    
+    // ホールドアウト検証オプション
+    public int HoldoutDays { get; set; } = 0;
 }

@@ -97,7 +97,11 @@ public class ExcelWriter
         ws.Cell(startRow, 1).Style.Font.Bold = true;
         
         // ヘッダー
-        var headers = new[] { "モデル名", "カテゴリ", "R²", "MSE", "AIC", "潜在バグ数", "不完全デバッグ率", "95%発見日", "99%発見日" };
+        // ヘッダー（ホールドアウト検証の列を追加）
+        var hasHoldout = results.Any(r => r.HoldoutMse.HasValue);
+        var headers = hasHoldout 
+            ? new[] { "モデル名", "カテゴリ", "R²", "MSE", "AIC", "潜在バグ数", "不完全デバッグ率", "Holdout_MSE", "Holdout_MAPE(%)", "損失関数", "95%発見日", "99%発見日" }
+            : new[] { "モデル名", "カテゴリ", "R²", "MSE", "AIC", "潜在バグ数", "不完全デバッグ率", "95%発見日", "99%発見日" };
         for (int i = 0; i < headers.Length; i++)
         {
             var cell = ws.Cell(startRow + 1, i + 1);
@@ -111,36 +115,49 @@ public class ExcelWriter
         int row = startRow + 2;
         foreach (var result in results.Where(r => r.Success).OrderBy(r => r.AIC))
         {
-            ws.Cell(row, 1).Value = result.ModelName;
-            ws.Cell(row, 2).Value = result.Category;
-            ws.Cell(row, 3).Value = result.R2;
-            ws.Cell(row, 4).Value = result.MSE;
-            ws.Cell(row, 5).Value = result.AIC;
-            ws.Cell(row, 6).Value = result.EstimatedTotalBugs;
-            ws.Cell(row, 7).Value = result.ImperfectDebugRate.HasValue 
+            int col = 1;
+            ws.Cell(row, col++).Value = result.ModelName;
+            ws.Cell(row, col++).Value = result.Category;
+            ws.Cell(row, col++).Value = result.R2;
+            ws.Cell(row, col++).Value = result.MSE;
+            ws.Cell(row, col++).Value = result.AIC;
+            ws.Cell(row, col++).Value = result.EstimatedTotalBugs;
+            ws.Cell(row, col++).Value = result.ImperfectDebugRate.HasValue 
                 ? $"{result.ImperfectDebugRate.Value * 100:F1}%" : "-";
+            
+            // ホールドアウト検証結果
+            if (hasHoldout)
+            {
+                ws.Cell(row, col++).Value = result.HoldoutMse.HasValue ? result.HoldoutMse.Value : "-";
+                ws.Cell(row, col++).Value = result.HoldoutMape.HasValue ? $"{result.HoldoutMape.Value:F2}" : "-";
+                ws.Cell(row, col++).Value = result.LossFunctionUsed;
+            }
             
             // 収束予測
             if (result.ConvergencePredictions.TryGetValue("95%発見", out var pred95))
             {
-                ws.Cell(row, 8).Value = pred95.AlreadyReached ? "到達済み" 
+                ws.Cell(row, col).Value = pred95.AlreadyReached ? "到達済み" 
                     : pred95.PredictedDay?.ToString("F1") ?? "予測不可";
             }
+            col++;
+            
             if (result.ConvergencePredictions.TryGetValue("99%発見", out var pred99))
             {
-                ws.Cell(row, 9).Value = pred99.AlreadyReached ? "到達済み" 
+                ws.Cell(row, col).Value = pred99.AlreadyReached ? "到達済み" 
                     : pred99.PredictedDay?.ToString("F1") ?? "予測不可";
             }
+            
+            int maxCol = col;
             
             // 最適モデルをハイライト
             if (result.ModelName == bestResult.ModelName)
             {
-                ws.Range(row, 1, row, 9).Style.Fill.BackgroundColor = XLColor.LightGreen;
+                ws.Range(row, 1, row, maxCol).Style.Fill.BackgroundColor = XLColor.LightGreen;
             }
             // 不完全デバッグモデルを別色
             else if (result.Category == "不完全デバッグ")
             {
-                ws.Range(row, 1, row, 9).Style.Fill.BackgroundColor = XLColor.FromHtml("#FFE4B5");
+                ws.Range(row, 1, row, maxCol).Style.Fill.BackgroundColor = XLColor.FromHtml("#FFE4B5");
             }
             
             row++;

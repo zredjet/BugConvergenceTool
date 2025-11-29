@@ -16,11 +16,71 @@ public class ReportGenerator
     }
     
     /// <summary>
+    /// 文字列の表示幅を計算（全角文字は2、半角文字は1）
+    /// </summary>
+    private static int GetDisplayWidth(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return 0;
+        int width = 0;
+        foreach (char c in s)
+        {
+            width += IsFullWidth(c) ? 2 : 1;
+        }
+        return width;
+    }
+    
+    /// <summary>
+    /// 全角文字かどうかを判定
+    /// </summary>
+    private static bool IsFullWidth(char c)
+    {
+        return (c >= 0x1100 && c <= 0x115F) ||  // Hangul Jamo
+               (c >= 0x2E80 && c <= 0x9FFF) ||  // CJK
+               (c >= 0xAC00 && c <= 0xD7A3) ||  // Hangul Syllables
+               (c >= 0xF900 && c <= 0xFAFF) ||  // CJK Compatibility Ideographs
+               (c >= 0xFE10 && c <= 0xFE1F) ||  // Vertical Forms
+               (c >= 0xFE30 && c <= 0xFE6F) ||  // CJK Compatibility Forms
+               (c >= 0xFF00 && c <= 0xFF60) ||  // Fullwidth Forms
+               (c >= 0xFFE0 && c <= 0xFFE6) ||  // Fullwidth Forms
+               (c >= 0x3000 && c <= 0x303F) ||  // CJK Symbols and Punctuation
+               (c >= 0x3040 && c <= 0x309F) ||  // Hiragana
+               (c >= 0x30A0 && c <= 0x30FF) ||  // Katakana
+               (c >= 0x31F0 && c <= 0x31FF);    // Katakana Phonetic Extensions
+    }
+    
+    /// <summary>
+    /// 文字列を指定幅に左寄せでパディング
+    /// </summary>
+    private static string PadRightByWidth(string s, int totalWidth)
+    {
+        int currentWidth = GetDisplayWidth(s);
+        int padding = totalWidth - currentWidth;
+        return padding > 0 ? s + new string(' ', padding) : s;
+    }
+    
+    /// <summary>
+    /// 文字列を指定幅に右寄せでパディング
+    /// </summary>
+    private static string PadLeftByWidth(string s, int totalWidth)
+    {
+        int currentWidth = GetDisplayWidth(s);
+        int padding = totalWidth - currentWidth;
+        return padding > 0 ? new string(' ', padding) + s : s;
+    }
+    
+    /// <summary>
     /// 分析レポートを生成
     /// </summary>
     public string GenerateReport(List<FittingResult> results, FittingResult bestResult)
     {
         var sb = new StringBuilder();
+        
+        // カラム幅の定義
+        const int colModel = 28;
+        const int colCategory = 14;
+        const int colNum = 10;
+        const int colMilestone = 16;
+        const int colDate = 15;
         
         sb.AppendLine("================================================================================");
         sb.AppendLine("                    バグ収束推定レポート");
@@ -61,13 +121,14 @@ public class ReportGenerator
         sb.AppendLine("【モデル比較結果】");
         sb.AppendLine("--------------------------------------------------------------------------------");
         sb.AppendLine();
-        sb.AppendLine($"{"モデル名",-25} {"カテゴリ",-12} {"R²",10} {"MSE",10} {"AIC",10} {"潜在バグ",10}");
-        sb.AppendLine(new string('-', 80));
+        sb.AppendLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {PadLeftByWidth("R²", colNum)} {PadLeftByWidth("MSE", colNum)} {PadLeftByWidth("AIC", colNum)} {PadLeftByWidth("潜在バグ", colNum)}");
+        sb.AppendLine(new string('-', 92));
         
         foreach (var result in results.Where(r => r.Success).OrderBy(r => r.AIC))
         {
             string marker = result.ModelName == bestResult.ModelName ? " *" : "";
-            sb.AppendLine($"{result.ModelName + marker,-25} {result.Category,-12} {result.R2,10:F4} {result.MSE,10:F2} {result.AIC,10:F2} {result.EstimatedTotalBugs,10:F1}");
+            string modelNameWithMarker = result.ModelName + marker;
+            sb.AppendLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.MSE,colNum:F2} {result.AIC,colNum:F2} {result.EstimatedTotalBugs,colNum:F1}");
         }
         sb.AppendLine();
         sb.AppendLine("  * = 推奨モデル（AIC最小）");
@@ -116,8 +177,8 @@ public class ReportGenerator
         sb.AppendLine("【収束予測】");
         sb.AppendLine("--------------------------------------------------------------------------------");
         sb.AppendLine();
-        sb.AppendLine($"{"マイルストーン",-12} {"予測日数",10} {"残り日数",10} {"予測日付",15} {"バグ数",10}");
-        sb.AppendLine(new string('-', 60));
+        sb.AppendLine($"{PadRightByWidth("マイルストーン", colMilestone)} {PadLeftByWidth("予測日数", colNum)} {PadLeftByWidth("残り日数", colNum)} {PadLeftByWidth("予測日付", colDate)} {PadLeftByWidth("バグ数", colNum)}");
+        sb.AppendLine(new string('-', 72));
         
         foreach (var (name, pred) in bestResult.ConvergencePredictions)
         {
@@ -127,7 +188,7 @@ public class ReportGenerator
                 : pred.RemainingDays?.ToString("F1") ?? "-";
             string dateStr = pred.PredictedDate?.ToString("yyyy/MM/dd") ?? "-";
             
-            sb.AppendLine($"{name,-12} {dayStr,10} {remainStr,10} {dateStr,15} {pred.BugsAtPoint,10:F1}");
+            sb.AppendLine($"{PadRightByWidth(name, colMilestone)} {PadLeftByWidth(dayStr, colNum)} {remainStr,colNum} {dateStr,colDate} {pred.BugsAtPoint,colNum:F1}");
         }
         sb.AppendLine();
         
@@ -177,11 +238,91 @@ public class ReportGenerator
     }
     
     /// <summary>
+    /// 警告セクションを含むレポートを生成
+    /// </summary>
+    public string GenerateReport(List<FittingResult> results, FittingResult bestResult, IEnumerable<string>? warnings)
+    {
+        var sb = new StringBuilder(GenerateReport(results, bestResult));
+        
+        // 警告セクションを追加（レポート終了の前に挿入）
+        if (warnings != null && warnings.Any())
+        {
+            var warningSection = new StringBuilder();
+            warningSection.AppendLine();
+            warningSection.AppendLine("--------------------------------------------------------------------------------");
+            warningSection.AppendLine("【警告・注意事項】");
+            warningSection.AppendLine("--------------------------------------------------------------------------------");
+            warningSection.AppendLine();
+            
+            int i = 1;
+            foreach (var warning in warnings)
+            {
+                warningSection.AppendLine($"  {i}. {warning}");
+                i++;
+            }
+            warningSection.AppendLine();
+            
+            // "レポート終了" の前に挿入
+            string report = sb.ToString();
+            int insertPos = report.LastIndexOf("================================================================================\n                          レポート終了");
+            if (insertPos > 0)
+            {
+                return report.Insert(insertPos, warningSection.ToString());
+            }
+            else
+            {
+                // 挿入位置が見つからない場合は末尾に追加
+                return report + warningSection.ToString();
+            }
+        }
+        
+        return sb.ToString();
+    }
+    
+    /// <summary>
+    /// ホールドアウト検証結果をレポートに追加
+    /// </summary>
+    private void AppendHoldoutResults(StringBuilder sb, List<FittingResult> results)
+    {
+        var resultsWithHoldout = results.Where(r => r.Success && r.HoldoutMse.HasValue).ToList();
+        if (!resultsWithHoldout.Any()) return;
+        
+        sb.AppendLine("--------------------------------------------------------------------------------");
+        sb.AppendLine("【ホールドアウト検証結果】");
+        sb.AppendLine("--------------------------------------------------------------------------------");
+        sb.AppendLine();
+        sb.AppendLine($"{"モデル名",-25} {"MSE",12} {"MAE",12} {"MAPE(%)",12}");
+        sb.AppendLine(new string('-', 65));
+        
+        foreach (var result in resultsWithHoldout.OrderBy(r => r.HoldoutMape ?? double.MaxValue))
+        {
+            string mapeStr = result.HoldoutMape.HasValue ? $"{result.HoldoutMape:F2}" : "-";
+            string mseStr = result.HoldoutMse.HasValue ? $"{result.HoldoutMse:F4}" : "-";
+            string maeStr = result.HoldoutMae.HasValue ? $"{result.HoldoutMae:F4}" : "-";
+            
+            sb.AppendLine($"{result.ModelName,-25} {mseStr,12} {maeStr,12} {mapeStr,12}");
+        }
+        sb.AppendLine();
+        sb.AppendLine("  * MAPE = Mean Absolute Percentage Error（平均絶対パーセント誤差）");
+        sb.AppendLine("  * 値が小さいほど予測精度が高い");
+        sb.AppendLine();
+    }
+    
+    /// <summary>
     /// レポートをファイルに保存
     /// </summary>
     public void SaveReport(string filePath, List<FittingResult> results, FittingResult bestResult)
     {
         string report = GenerateReport(results, bestResult);
+        File.WriteAllText(filePath, report, Encoding.UTF8);
+    }
+    
+    /// <summary>
+    /// 警告を含むレポートをファイルに保存
+    /// </summary>
+    public void SaveReport(string filePath, List<FittingResult> results, FittingResult bestResult, IEnumerable<string>? warnings)
+    {
+        string report = GenerateReport(results, bestResult, warnings);
         File.WriteAllText(filePath, report, Encoding.UTF8);
     }
 }
