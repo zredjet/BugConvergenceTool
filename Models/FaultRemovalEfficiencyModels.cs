@@ -73,7 +73,23 @@ public class ConstantFREModel : FaultRemovalEfficiencyModelBase
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        return new[] { maxY * 1.5, 0.1, 0.8 };
+        int n = tData.Length;
+
+        // a: 設定から取得
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        bool isConverged = increment <= GetConvergenceThreshold();
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.0);  // 低めのスケール
+
+        // b: 設定から指数型の値を取得
+        double avgSlope = EstimateAverageSlope(yData);
+        double b0 = GetBValueExponential(avgSlope);
+
+        // η: 設定から初期欠陥除去効率を取得
+        double eta0 = GetEta0();
+
+        return new[] { a0, b0, eta0 };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -135,7 +151,25 @@ public class LearningFREModel : FaultRemovalEfficiencyModelBase
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        return new[] { maxY * 1.5, 0.1, 0.5, 0.95, 0.1 };
+        int n = tData.Length;
+
+        // a: 設定から取得
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        bool isConverged = increment <= GetConvergenceThreshold();
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.0);  // 低めのスケール
+
+        // b: 設定から指数型の値を取得
+        double avgSlope = EstimateAverageSlope(yData);
+        double b0 = GetBValueExponential(avgSlope);
+
+        // η関連: 設定から取得
+        double eta0 = GetEta0() - 0.3;  // 初期はやや低め
+        double etaInf0 = GetEtaInfinity();
+        double lambda0 = 0.1;
+
+        return new[] { a0, b0, eta0, etaInf0, lambda0 };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -213,7 +247,27 @@ public class ErrorGenerationModel : FaultRemovalEfficiencyModelBase
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        return new[] { maxY * 1.2, 0.1, 0.1 };
+        int n = tData.Length;
+
+        // a₀: 収束度合いに応じて 1.1〜1.5×maxY（導入分を考慮してやや控えめ）
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        double a0 = increment <= 1.0 ? maxY * 1.1 : maxY * 1.5;
+
+        // b: 平均増分から指数型と同様に推定
+        double avgSlope = EstimateAverageSlope(yData);
+        double b0 = avgSlope switch
+        {
+            <= 0.1 => 0.05,
+            <= 0.5 => 0.1,
+            <= 1.0 => 0.2,
+            _ => 0.3
+        };
+
+        double alpha0 = 0.1;
+
+        return new[] { a0, b0, alpha0 };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -291,7 +345,28 @@ public class FREErrorGenerationModel : FaultRemovalEfficiencyModelBase
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        return new[] { maxY * 1.2, 0.1, 0.8, 0.1 };
+        int n = tData.Length;
+
+        // a₀: 収束度合いに応じて 1.2〜1.8×maxY
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        double a0 = increment <= 1.0 ? maxY * 1.2 : maxY * 1.8;
+
+        // b: 平均増分から指数型と同様に推定
+        double avgSlope = EstimateAverageSlope(yData);
+        double b0 = avgSlope switch
+        {
+            <= 0.1 => 0.05,
+            <= 0.5 => 0.1,
+            <= 1.0 => 0.2,
+            _ => 0.3
+        };
+
+        double eta0 = 0.8;
+        double alpha0 = 0.1;
+
+        return new[] { a0, b0, eta0, alpha0 };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -421,7 +496,31 @@ public class IntegratedFREModel : FaultRemovalEfficiencyModelBase
     {
         double maxY = yData.Max();
         int n = tData.Length;
-        return new[] { maxY * 1.5, 0.1, 0.15, 0.8, 0.1, n / 2.0 };
+
+        // a: 収束度合いに応じて 1.3〜1.7×maxY
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        double a0 = increment <= 1.0 ? maxY * 1.3 : maxY * 1.7;
+
+        // b₁, b₂: 平均増分から指数型と同様に初期化し、まずは同じ値から開始
+        double avgSlope = EstimateAverageSlope(yData);
+        double b1 = avgSlope switch
+        {
+            <= 0.1 => 0.05,
+            <= 0.5 => 0.1,
+            <= 1.0 => 0.2,
+            _ => 0.3
+        };
+        double b2 = b1;
+
+        double eta0 = 0.8;
+        double alpha0 = 0.1;
+
+        // τ: 累積50%到達日を変化点候補に
+        double tau0 = FindDayForCumulativeRatio(yData, 0.5);
+
+        return new[] { a0, b1, b2, eta0, alpha0, tau0 };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)

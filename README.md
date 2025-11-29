@@ -41,6 +41,7 @@ BugConvergenceTool <入力Excel> [オプション]
 |-----------|------|
 | `-h`, `--help` | ヘルプを表示 |
 | `-o`, `--output DIR` | 出力ディレクトリを指定 |
+| `-c`, `--config FILE` | 設定ファイルを指定 |
 | `-v`, `--verbose` | 詳細出力 |
 | `--basic-only` | 基本モデルのみ使用 |
 | `--optimizer TYPE` | 最適化アルゴリズム（de/pso/gwo/cmaes/nm/grid/auto） |
@@ -335,6 +336,235 @@ u(t) = b₁·τ + b₂·(t-τ) （t > τ）
 | maxIterations | 2000 | 勾配降下法の最大反復回数 |
 | learningRate | 0.00005 | 学習率 |
 | delta | 0.0001 | 数値微分のデルタ |
+
+### パラメータヒューリスティックと個別最適化方針
+
+#### ヒューリスティック定義箇所
+
+- モデルパラメータの初期値と探索範囲は、`Models/*.cs` の `GetInitialParameters` および `GetBounds` 内で `maxY`（観測最大値）や `n`（データ点数）を用いて決め打ちしています。例えば `BasicModels.cs` では `a` の上限を `maxY×5`、`τ` の範囲を `[1, n]` といった形で経験的に設定しています。
+- オプティマイザのハイパーパラメータ（個体数・反復回数・係数など）は `Optimizers/*.cs` に記載された定数で、30〜120点程度の一般的なバグ推移データを想定した経験値です。
+- 上記以外に学習率や初期シグマなどの収束パラメータも全てヒューリスティックであり、データセットのスケールを直接観測して自動調整する仕組みは現状ありません。
+
+#### 初期値の妥当性と修正の指針
+
+- 初期値は、「30〜100日程度である程度収束している典型的な累積欠陥データ」を想定した**経験値ベース**ですが、現在は入力データに応じて自動的に調整されるようになっています。
+- `a` は終盤の増分（直近2点の差）を見て「ほぼ収束している場合は `1.1〜1.3 × maxY`」「まだ増え続けている場合は `1.3〜1.8 × maxY`」程度の範囲でモデルごとに設定されます。
+- `b` や `c`、変化点 `τ` は、期間全体の平均増分や累積バグ数が 30%/50%/70% に到達するタイミングなどから、立ち上がりの速さ・変曲点の位置に合わせて初期値を決めています（`n/2` 固定などの単純な定数ではありません）。
+- 専門的な意味での「統計的に最適な初期値」を保証するものではなく、「大域的オプティマイザが迷いにくくなるよう、データのスケールと形状に合わせた無難なスタート地点」を与える設計です。
+
+具体的な修正方針は次の通りです：
+
+- `a`（総バグ数スケール）
+  - 観測がほぼ収束している（終盤の増分がほぼ 0）場合は `a_init ≈ 1.1〜1.3 × maxY` を目安に、`GetInitialParameters` で `1.5` を小さめに調整します。
+  - まだ増え続けている場合は `a_init ≈ 1.3〜1.8 × maxY` とし、必要に応じて `GetBounds` の上限（`maxY×5` など）も少し下げる／上げることで過大・過小推定を防ぎます。
+- `b`, `c`（成長率・形状）
+  - 立ち上がりが非常に早いデータでは `b` を現状より大きめ（例: 0.3〜0.5）、ゆっくりしたデータでは小さめ（0.05〜0.1）に振ると収束が安定しやすくなります。
+  - ロジスティックや S 字系の `c` は「変曲点の日」に相当するため、累積バグ数が 30%/50%/70% を越えるタイミングを目視または簡易計算で求め、そのうち 50% 付近の日を `c_init` に使うとロバストです（`n/2` 固定からの改良）。
+- 変化点 `τ`（Change Point 系）
+  - デフォルトの `τ ≈ n/2` は「変化点が中央付近」という仮定なので、`ChangePointDetector` などで検出した傾き変化点を `τ` の初期値に用いると適合性が向上します。
+  - 変化点がなさそうなデータでは、`GetBounds` の `τ` 範囲を少し狭めることで過剰適合を抑制できます。
+
+#### 個別最適化を行う際の流れ
+
+1. まず `--optimizer de` もしくは `--optimizer auto` で全パラメータを一括推定し、出力されたテキストレポート／Excelで現在値と目的関数値（RMSEや残差）を確認します。
+2. 改善したいパラメータだけを調整できるよう、対象モデルの `GetBounds` でそのパラメータの下限・上限を「最良推定値±20〜30%」などに縮め、他パラメータは現状の範囲を保つか、固定したい場合は下限=上限に設定します。
+3. 低次元の微調整には `--optimizer nm`（単体法）や `--optimizer grid` を使うのが効果的です。Nelder-Mead で連続的に追い込み、必要なら GridSearch+GD で1変数ずつの感度を確認してください。
+4. 調整後は必ず再度 `--optimizer auto` など大域的手法で回し、他のモデル・パラメータとの整合と汎化性能（過剰適合していないか）を確認します。必要に応じて bounds を元に戻し、別のパラメータに対して同じ手順を繰り返します。
+
+この手順により、ヒューリスティックに依存している範囲設定を明示的にコントロールしつつ、個々のパラメータを安全にチューニングできます。
+
+## 設定ファイル（config.json）
+
+設定ファイルを使用することで、オプティマイザのハイパーパラメータやモデルの初期値推定に使われるしきい値・倍率をカスタマイズできます。
+
+### 設定ファイルの配置場所
+
+以下の順序で設定ファイルが検索されます：
+
+1. `-c, --config` オプションで明示的に指定されたパス
+2. カレントディレクトリの `config.json`
+3. 実行ファイルと同じディレクトリの `config.json`
+4. `Templates/config.json`
+5. `Templates/default-config.json`
+
+設定ファイルが見つからない場合は、デフォルト値が使用されます。
+
+### 設定ファイルの構造
+
+```json
+{
+  "Optimizers": {
+    "DE": {
+      "PopulationSize": 50,
+      "MaxIterations": 500,
+      "F": 0.8,
+      "CR": 0.9,
+      "Tolerance": 1e-10
+    },
+    "PSO": {
+      "SwarmSize": 30,
+      "MaxIterations": 500,
+      "W": 0.729,
+      "C1": 1.49445,
+      "C2": 1.49445,
+      "Tolerance": 1e-10
+    },
+    "CMAES": {
+      "MaxIterations": 500,
+      "InitialSigmaU": 0.5,
+      "Tolerance": 1e-10
+    },
+    "GWO": {
+      "PackSize": 30,
+      "MaxIterations": 500,
+      "Tolerance": 1e-10
+    },
+    "NelderMead": {
+      "MaxIterations": 1000,
+      "Tolerance": 1e-10,
+      "Alpha": 1.0,
+      "Gamma": 2.0,
+      "Rho": 0.5,
+      "Sigma": 0.5
+    },
+    "GridSearchGradient": {
+      "GridSize": 0,
+      "MaxIterations": 2000,
+      "LearningRate": 0.00005,
+      "Delta": 0.0001
+    }
+  },
+  "ModelInitialization": {
+    "ScaleFactorA": {
+      "ConvergedMin": 1.1,
+      "ConvergedMax": 1.4,
+      "NotConvergedMin": 1.5,
+      "NotConvergedMax": 1.9
+    },
+    "IncrementThreshold": {
+      "ConvergenceThreshold": 1.0
+    },
+    "AverageSlopeThresholds": {
+      "VeryLow": 0.1,
+      "Low": 0.5,
+      "Medium": 1.0,
+      "BValuesExponential": {
+        "VeryLow": 0.05,
+        "Low": 0.1,
+        "Medium": 0.2,
+        "High": 0.3
+      },
+      "BValuesSCurve": {
+        "VeryLow": 0.08,
+        "Low": 0.15,
+        "Medium": 0.25,
+        "High": 0.35
+      }
+    }
+  },
+  "ChangePoint": {
+    "CumulativeRatio": 0.5,
+    "MultipleChangePoints": {
+      "TwoPointRatios": [0.33, 0.67],
+      "ThreePointRatios": [0.25, 0.5, 0.75]
+    }
+  },
+  "ImperfectDebug": {
+    "P0": 0.1,
+    "Eta0": 0.8,
+    "EtaInfinity": 0.95,
+    "Alpha0": 0.1,
+    "GompertzB0": 2.0
+  }
+}
+```
+
+### 設定項目の説明
+
+#### オプティマイザ設定（`Optimizers`）
+
+| セクション | パラメータ | 説明 |
+|-----------|-----------|------|
+| **DE** | `PopulationSize` | 差分進化の個体数（デフォルト: 50） |
+| | `MaxIterations` | 最大反復回数（デフォルト: 500） |
+| | `F` | スケーリング係数（デフォルト: 0.8） |
+| | `CR` | 交叉率（デフォルト: 0.9） |
+| **PSO** | `SwarmSize` | 粒子数（デフォルト: 30） |
+| | `W` | 慣性重み（デフォルト: 0.729） |
+| | `C1`, `C2` | 認知・社会係数（デフォルト: 1.49445） |
+| **CMAES** | `InitialSigmaU` | u空間での初期ステップサイズ（デフォルト: 0.5） |
+| **GWO** | `PackSize` | 群れサイズ（デフォルト: 30） |
+| **NelderMead** | `Alpha`, `Gamma`, `Rho`, `Sigma` | 反射・拡大・収縮・縮小係数 |
+
+#### モデル初期値推定設定（`ModelInitialization`）
+
+| セクション | パラメータ | 説明 |
+|-----------|-----------|------|
+| **ScaleFactorA** | `ConvergedMin/Max` | 収束時のaスケール係数範囲 |
+| | `NotConvergedMin/Max` | 未収束時のaスケール係数範囲 |
+| **IncrementThreshold** | `ConvergenceThreshold` | 収束判定の増分しきい値（デフォルト: 1.0） |
+| **AverageSlopeThresholds** | `VeryLow`, `Low`, `Medium` | 平均傾き区分のしきい値 |
+| | `BValuesExponential` | 指数型モデルのb初期値 |
+| | `BValuesSCurve` | S字型モデルのb初期値 |
+
+#### 変化点設定（`ChangePoint`）
+
+| パラメータ | 説明 |
+|-----------|------|
+| `CumulativeRatio` | 変化点τを決める累積比率（デフォルト: 0.5） |
+| `TwoPointRatios` | 2変化点モデルの累積比率 |
+| `ThreePointRatios` | 3変化点モデルの累積比率 |
+
+#### 不完全デバッグ設定（`ImperfectDebug`）
+
+| パラメータ | 説明 |
+|-----------|------|
+| `P0` | 不完全デバッグ係数pの初期値（デフォルト: 0.1） |
+| `Eta0` | 初期欠陥除去効率η₀（デフォルト: 0.8） |
+| `EtaInfinity` | 漸近欠陥除去効率η∞（デフォルト: 0.95） |
+| `Alpha0` | バグ混入率αの初期値（デフォルト: 0.1） |
+| `GompertzB0` | ゴンペルツモデルの初期遅延係数（デフォルト: 2.0） |
+
+### カスタマイズ例
+
+#### 計算を軽量化したい場合
+
+```json
+{
+  "Optimizers": {
+    "DE": {
+      "PopulationSize": 20,
+      "MaxIterations": 200
+    },
+    "PSO": {
+      "SwarmSize": 15,
+      "MaxIterations": 200
+    }
+  }
+}
+```
+
+#### バグ報告のスケールが大きいプロジェクトの場合
+
+```json
+{
+  "ModelInitialization": {
+    "IncrementThreshold": {
+      "ConvergenceThreshold": 5.0
+    }
+  }
+}
+```
+
+#### 変化点を早めに設定したい場合
+
+```json
+{
+  "ChangePoint": {
+    "CumulativeRatio": 0.4
+  }
+}
+```
 
 ## ライセンス
 

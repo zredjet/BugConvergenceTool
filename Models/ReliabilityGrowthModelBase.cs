@@ -1,3 +1,5 @@
+using BugConvergenceTool.Services;
+
 namespace BugConvergenceTool.Models;
 
 /// <summary>
@@ -80,6 +82,171 @@ public abstract class ReliabilityGrowthModelBase
         // 基本モデルの多くは parameters[0] (a) が総欠陥数
         return parameters[0];
     }
+
+    #region 共通ヘルパ（初期値推定用）
+
+    /// <summary>
+    /// 観測値の累積系列を計算
+    /// </summary>
+    protected static double[] ComputeCumulative(double[] yData)
+    {
+        var cum = new double[yData.Length];
+        double s = 0;
+        for (int i = 0; i < yData.Length; i++)
+        {
+            s += yData[i];
+            cum[i] = s;
+        }
+        return cum;
+    }
+
+    /// <summary>
+    /// 累積系列が targetRatio に初めて達するインデックス（1始まりの日数を返す）
+    /// 到達しない場合は最終日のインデックスを返す
+    /// </summary>
+    protected static double FindDayForCumulativeRatio(double[] yData, double targetRatio)
+    {
+        if (yData.Length == 0) return 1.0;
+
+        var cum = ComputeCumulative(yData);
+        double total = cum[^1];
+        if (total <= 0) return 1.0;
+
+        double target = total * targetRatio;
+        for (int i = 0; i < cum.Length; i++)
+        {
+            if (cum[i] >= target)
+                return i + 1.0; // 1始まりの日数に対応
+        }
+
+        return cum.Length;
+    }
+
+    /// <summary>
+    /// 日次データから単純な平均勾配を推定
+    /// </summary>
+    protected static double EstimateAverageSlope(double[] yData)
+    {
+        if (yData.Length == 0) return 0;
+
+        double min = yData.Min();
+        double max = yData.Max();
+        int n = yData.Length;
+        if (n <= 1) return max - min;
+
+        return (max - min) / (n - 1);
+    }
+    
+    /// <summary>
+    /// 設定から収束しきい値を取得
+    /// </summary>
+    protected static double GetConvergenceThreshold()
+    {
+        return ConfigurationService.Current.ModelInitialization.IncrementThreshold.ConvergenceThreshold;
+    }
+    
+    /// <summary>
+    /// 設定から a パラメータのスケール係数を取得（範囲内で調整）
+    /// </summary>
+    /// <param name="isConverged">収束済みかどうか</param>
+    /// <param name="position">0.0～1.0の範囲でスケール位置を指定（0=Min, 1=Max）</param>
+    protected static double GetScaleFactorAInRange(bool isConverged, double position)
+    {
+        var sf = ConfigurationService.Current.ModelInitialization.ScaleFactorA;
+        
+        if (isConverged)
+        {
+            return sf.ConvergedMin + (sf.ConvergedMax - sf.ConvergedMin) * position;
+        }
+        else
+        {
+            return sf.NotConvergedMin + (sf.NotConvergedMax - sf.NotConvergedMin) * position;
+        }
+    }
+    
+    /// <summary>
+    /// 設定から b パラメータ（指数型）を取得
+    /// </summary>
+    protected static double GetBValueExponential(double avgSlope)
+    {
+        var thresholds = ConfigurationService.Current.ModelInitialization.AverageSlopeThresholds;
+        var bValues = thresholds.BValuesExponential;
+        
+        return avgSlope switch
+        {
+            var s when s <= thresholds.VeryLow => bValues.VeryLow,
+            var s when s <= thresholds.Low => bValues.Low,
+            var s when s <= thresholds.Medium => bValues.Medium,
+            _ => bValues.High
+        };
+    }
+    
+    /// <summary>
+    /// 設定から b パラメータ（S字型）を取得
+    /// </summary>
+    protected static double GetBValueSCurve(double avgSlope)
+    {
+        var thresholds = ConfigurationService.Current.ModelInitialization.AverageSlopeThresholds;
+        var bValues = thresholds.BValuesSCurve;
+        
+        return avgSlope switch
+        {
+            var s when s <= thresholds.VeryLow => bValues.VeryLow,
+            var s when s <= thresholds.Low => bValues.Low,
+            var s when s <= thresholds.Medium => bValues.Medium,
+            _ => bValues.High
+        };
+    }
+    
+    /// <summary>
+    /// 設定から変化点比率を取得
+    /// </summary>
+    protected static double GetChangePointRatio()
+    {
+        return ConfigurationService.Current.ChangePoint.CumulativeRatio;
+    }
+    
+    /// <summary>
+    /// 設定から不完全デバッグ係数 p の初期値を取得
+    /// </summary>
+    protected static double GetImperfectDebugP0()
+    {
+        return ConfigurationService.Current.ImperfectDebug.P0;
+    }
+    
+    /// <summary>
+    /// 設定から初期欠陥除去効率 η₀ を取得
+    /// </summary>
+    protected static double GetEta0()
+    {
+        return ConfigurationService.Current.ImperfectDebug.Eta0;
+    }
+    
+    /// <summary>
+    /// 設定から漸近欠陥除去効率 η∞ を取得
+    /// </summary>
+    protected static double GetEtaInfinity()
+    {
+        return ConfigurationService.Current.ImperfectDebug.EtaInfinity;
+    }
+    
+    /// <summary>
+    /// 設定からバグ混入率 α の初期値を取得
+    /// </summary>
+    protected static double GetAlpha0()
+    {
+        return ConfigurationService.Current.ImperfectDebug.Alpha0;
+    }
+    
+    /// <summary>
+    /// 設定からゴンペルツの初期遅延係数を取得
+    /// </summary>
+    protected static double GetGompertzB0()
+    {
+        return ConfigurationService.Current.ImperfectDebug.GompertzB0;
+    }
+
+    #endregion
     
     /// <summary>
     /// 残差二乗和を計算

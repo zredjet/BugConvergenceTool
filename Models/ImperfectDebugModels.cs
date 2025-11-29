@@ -25,7 +25,23 @@ public class ImperfectDebugExponentialModel : ReliabilityGrowthModelBase
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        return new[] { maxY * 1.5, 0.1, 0.1 };
+        int n = tData.Length;
+
+        // a: 不完全デバッグを考慮してやや大きめ
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        bool isConverged = increment <= GetConvergenceThreshold();
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.3);  // 不完全デバッグは中程度のスケール
+
+        // b: 設定から指数型の値を取得
+        double avgSlope = EstimateAverageSlope(yData);
+        double b0 = GetBValueExponential(avgSlope);
+
+        // p: 設定から不完全デバッグ係数の初期値を取得
+        double p0 = GetImperfectDebugP0();
+
+        return new[] { a0, b0, p0 };
     }
 
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -66,7 +82,23 @@ public class ImperfectDebugSModel : ReliabilityGrowthModelBase
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        return new[] { maxY * 1.8, 0.15, 0.1 };
+        int n = tData.Length;
+
+        // a: S字 + 不完全デバッグのため大きめのスケール
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        bool isConverged = increment <= GetConvergenceThreshold();
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.6);  // S字+不完全デバッグは高めのスケール
+
+        // b: S字型用の設定から取得
+        double avgSlope = EstimateAverageSlope(yData);
+        double b0 = GetBValueSCurve(avgSlope);
+
+        // p: 設定から取得
+        double p0 = GetImperfectDebugP0();
+
+        return new[] { a0, b0, p0 };
     }
 
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -108,7 +140,26 @@ public class GeneralizedImperfectDebugModel : ReliabilityGrowthModelBase
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        return new[] { maxY * 1.5, 0.1, 1.0, 0.1 };
+        int n = tData.Length;
+
+        // a: 設定から取得
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        bool isConverged = increment <= GetConvergenceThreshold();
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.3);  // 中程度のスケール
+
+        // c: 形状パラメータ。とりあえず 1.0 から開始
+        double c0 = 1.0;
+
+        // b: 設定から指数型の値を取得
+        double avgSlope = EstimateAverageSlope(yData);
+        double b0 = GetBValueExponential(avgSlope);
+
+        // p: 設定から取得
+        double p0 = GetImperfectDebugP0();
+
+        return new[] { a0, b0, c0, p0 };
     }
 
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)

@@ -91,8 +91,26 @@ public class TEFExponentialModel : TEFBasedModelBase
         double maxY = yData.Max();
         var effortData = GetEffortDataForTEF(yData);
         var tefInit = _tef.GetInitialParameters(tData, effortData);
-        
-        var initial = new List<double> { maxY * 1.5, 0.01 };
+
+        int n = tData.Length;
+
+        // a: 収束度合いに応じて 1.2〜1.8×maxY
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        double a0 = increment <= 1.0 ? maxY * 1.2 : maxY * 1.8;
+
+        // b: 平均増分から指数型と同様に推定
+        double avgSlope = EstimateAverageSlope(yData);
+        double b0 = avgSlope switch
+        {
+            <= 0.1 => 0.02,
+            <= 0.5 => 0.05,
+            <= 1.0 => 0.1,
+            _ => 0.2
+        };
+
+        var initial = new List<double> { a0, b0 };
         initial.AddRange(tefInit);
         return initial.ToArray();
     }
@@ -153,8 +171,26 @@ public class TEFDelayedSModel : TEFBasedModelBase
         double maxY = yData.Max();
         var effortData = GetEffortDataForTEF(yData);
         var tefInit = _tef.GetInitialParameters(tData, effortData);
-        
-        var initial = new List<double> { maxY * 1.5, 0.02 };
+
+        int n = tData.Length;
+
+        // a: 収束度合いに応じて 1.2〜1.8×maxY
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        double a0 = increment <= 1.0 ? maxY * 1.2 : maxY * 1.8;
+
+        // b: 遅延S字と同様に平均増分で調整
+        double avgSlope = EstimateAverageSlope(yData);
+        double b0 = avgSlope switch
+        {
+            <= 0.1 => 0.03,
+            <= 0.5 => 0.08,
+            <= 1.0 => 0.15,
+            _ => 0.25
+        };
+
+        var initial = new List<double> { a0, b0 };
         initial.AddRange(tefInit);
         return initial.ToArray();
     }
@@ -245,8 +281,28 @@ public class TEFImperfectDebugModel : TEFBasedModelBase
         double maxY = yData.Max();
         var effortData = GetEffortDataForTEF(yData);
         var tefInit = _tef.GetInitialParameters(tData, effortData);
-        
-        var initial = new List<double> { maxY * 1.5, 0.01, 0.1 };
+
+        int n = tData.Length;
+
+        // a: 不完全デバッグを考慮して 1.3〜1.7×maxY
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        double a0 = increment <= 1.0 ? maxY * 1.3 : maxY * 1.7;
+
+        // b: 平均増分から指数型と同様に初期化
+        double avgSlope = EstimateAverageSlope(yData);
+        double b0 = avgSlope switch
+        {
+            <= 0.1 => 0.02,
+            <= 0.5 => 0.05,
+            <= 1.0 => 0.1,
+            _ => 0.2
+        };
+
+        double alpha0 = 0.1;
+
+        var initial = new List<double> { a0, b0, alpha0 };
         initial.AddRange(tefInit);
         return initial.ToArray();
     }

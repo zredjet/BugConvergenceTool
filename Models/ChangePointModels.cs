@@ -57,9 +57,20 @@ public class ExponentialChangePointModel : ChangePointModelBase
     {
         double maxY = yData.Max();
         int n = tData.Length;
-        double midT = n / 2.0;
-        
-        return new[] { maxY * 0.6, 0.15, maxY * 0.6, 0.15, midT };
+
+        // 設定から累積比率を取得して「代表変化点候補」を決定
+        double tau0 = FindDayForCumulativeRatio(yData, GetChangePointRatio());
+
+        // 変化点前後で総欠陥数をざっくり半分ずつに分配
+        double a1 = maxY * 0.6;
+        double a2 = maxY * 0.6;
+
+        // b は設定から指数型の値を取得
+        double avgSlope = EstimateAverageSlope(yData);
+        double b1 = GetBValueExponential(avgSlope);
+        double b2 = b1;
+
+        return new[] { a1, b1, a2, b2, tau0 };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -116,9 +127,19 @@ public class DelayedSChangePointModel : ChangePointModelBase
     {
         double maxY = yData.Max();
         int n = tData.Length;
-        double midT = n / 2.0;
-        
-        return new[] { maxY * 0.6, 0.2, maxY * 0.6, 0.2, midT };
+
+        // 設定から累積比率を取得して変化点候補を決定
+        double tau0 = FindDayForCumulativeRatio(yData, GetChangePointRatio());
+
+        double a1 = maxY * 0.6;
+        double a2 = maxY * 0.6;
+
+        // b は設定からS字型の値を取得
+        double avgSlope = EstimateAverageSlope(yData);
+        double b1 = GetBValueSCurve(avgSlope);
+        double b2 = b1;
+
+        return new[] { a1, b1, a2, b2, tau0 };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -205,9 +226,26 @@ public class ImperfectDebugChangePointModel : ChangePointModelBase
     {
         double maxY = yData.Max();
         int n = tData.Length;
-        double midT = n / 2.0;
-        
-        return new[] { maxY * 1.2, 0.1, 0.15, 0.1, midT };
+
+        // 設定から累積比率を取得して変化点候補を決定
+        double tau0 = FindDayForCumulativeRatio(yData, GetChangePointRatio());
+
+        // a: 設定から取得
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        bool isConverged = increment <= GetConvergenceThreshold();
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.3);  // 中程度のスケール
+
+        // b₁, b₂: 設定から指数型の値を取得
+        double avgSlope = EstimateAverageSlope(yData);
+        double b1 = GetBValueExponential(avgSlope);
+        double b2 = b1;
+
+        // α: 設定から取得
+        double alpha0 = GetAlpha0();
+
+        return new[] { a0, b1, b2, alpha0, tau0 };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -303,7 +341,6 @@ public class MultipleChangePointModel : ChangePointModelBase
         
         // 累積値を計算
         double cumulative = 0;
-        double prevT = 0;
         
         for (int i = 0; i <= segment; i++)
         {
@@ -325,23 +362,34 @@ public class MultipleChangePointModel : ChangePointModelBase
         double maxY = yData.Max();
         int n = tData.Length;
         int numSegments = _numChangePoints + 1;
-        
+
         var initial = new List<double>();
-        
-        // 各セグメントのa, b
-        double segmentBugs = maxY / numSegments;
+
+        // セグメントごとの a は maxY を均等割りしつつ、やや余裕を持たせる
+        double segmentBugs = maxY * 1.2 / numSegments;
+        double avgSlope = EstimateAverageSlope(yData);
+        double baseB = avgSlope switch
+        {
+            <= 0.1 => 0.05,
+            <= 0.5 => 0.1,
+            <= 1.0 => 0.2,
+            _ => 0.3
+        };
+
         for (int i = 0; i < numSegments; i++)
         {
             initial.Add(segmentBugs);
-            initial.Add(0.15);
+            initial.Add(baseB);
         }
-        
-        // 変化点
+
+        // 変化点は累積(1/(numSegments+1), 2/(numSegments+1), ...)到達日をそれぞれ候補に
         for (int i = 1; i <= _numChangePoints; i++)
         {
-            initial.Add(n * i / (double)(numSegments));
+            double ratio = i / (double)(numSegments + 1);
+            double tau = FindDayForCumulativeRatio(yData, ratio);
+            initial.Add(tau);
         }
-        
+
         return initial.ToArray();
     }
     
@@ -525,16 +573,34 @@ public class ImperfectDebugExponentialChangePointModel : ChangePointModelBase
         double maxY = yData.Max();
         int n = tData.Length;
 
-        // 中央時刻を変化点の初期値とする（既存変化点モデルと同じくインデックスベース）
-        double midT = n / 2.0;
+        // 累積50%到達日を変化点候補に
+        double tau0 = FindDayForCumulativeRatio(yData, 0.5);
 
-        // 初期値: 変化点なしPNZに近い状態からスタート
+        // a: 不完全デバッグを考慮して 1.3〜1.7×maxY
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        double a0 = increment <= 1.0 ? maxY * 1.3 : maxY * 1.7;
+
+        // b₁, b₂: 平均増分から指数型と同様に初期化し、まずは同じ値から開始
+        double avgSlope = EstimateAverageSlope(yData);
+        double b1 = avgSlope switch
+        {
+            <= 0.1 => 0.05,
+            <= 0.5 => 0.1,
+            <= 1.0 => 0.2,
+            _ => 0.3
+        };
+        double b2 = b1;
+
+        double p0 = 0.1;
+
         return new[] {
-            maxY * 1.5,  // a: 総欠陥数スケール
-            0.1,         // b₁: 変化点前の検出率
-            0.1,         // b₂: 変化点後の検出率（最初は同じ）
-            0.1,         // p: 不完全デバッグ率
-            midT         // τ: 変化点
+            a0,
+            b1,
+            b2,
+            p0,
+            tau0
         };
     }
 

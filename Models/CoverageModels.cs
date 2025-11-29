@@ -55,13 +55,23 @@ public class WeibullCoverageModel : CoverageModelBase
         double maxY = yData.Max();
         int n = tData.Length;
 
-        // β: 半分の時間でそこそこカバレッジが出るイメージ
-        double beta0 = 1.0 / (n / 2.0);
+        // a: 収束度合いに応じて 1.2〜1.8×maxY
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        double a0 = increment <= 1.0 ? maxY * 1.2 : maxY * 1.8;
+
+        // β: 累積カバレッジ 50% 到達日から逆算（ざっくり）
+        double day50 = FindDayForCumulativeRatio(yData, 0.5);
+        double beta0 = day50 > 0 ? 1.0 / day50 : 1.0 / Math.Max(1, n / 2.0);
+
+        // γ: まずは 1.0（指数型相当）から開始
+        double gamma0 = 1.0;
 
         return new[] {
-            maxY * 1.5, // a: 総欠陥数スケール
-            beta0,      // β: 時間スケール
-            1.0         // γ: 単調凸からスタート
+            a0,
+            beta0,
+            gamma0
         };
     }
 
@@ -121,13 +131,29 @@ public class LogisticCoverageModel : CoverageModelBase
         double maxY = yData.Max();
         int n = tData.Length;
 
-        // τ: 中央時刻付近でカバレッジ50%
-        double midT = n / 2.0;
+        // a: 収束度合いに応じて 1.2〜1.8×maxY
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        double a0 = increment <= 1.0 ? maxY * 1.2 : maxY * 1.8;
+
+        // τ: 累積50%到達日をそのまま使用
+        double tau0 = FindDayForCumulativeRatio(yData, 0.5);
+
+        // β: 立ち上がりの鋭さ。平均増分で調整
+        double avgSlope = EstimateAverageSlope(yData);
+        double beta0 = avgSlope switch
+        {
+            <= 0.1 => 0.1,
+            <= 0.5 => 0.3,
+            <= 1.0 => 0.6,
+            _ => 1.0
+        };
 
         return new[] {
-            maxY * 1.5, // a: 総欠陥数スケール
-            0.2,        // β: 立ち上がりの鋭さ
-            midT        // τ: カバレッジ50%時刻
+            a0,
+            beta0,
+            tau0
         };
     }
 
@@ -188,12 +214,31 @@ public class GompertzCoverageModel : CoverageModelBase
         double maxY = yData.Max();
         int n = tData.Length;
 
-        double tau0 = n / 3.0; // 変曲点は前半に
+        // a: 収束度合いに応じて 1.2〜1.8×maxY
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        double increment = last - prev;
+        double a0 = increment <= 1.0 ? maxY * 1.2 : maxY * 1.8;
+
+        // τ: Gompertz は変曲点がやや前寄りなので、累積40〜60%あたりの中央値を意識
+        double day40 = FindDayForCumulativeRatio(yData, 0.4);
+        double day60 = FindDayForCumulativeRatio(yData, 0.6);
+        double tau0 = (day40 + day60) / 2.0;
+
+        // β: 平均増分で調整
+        double avgSlope = EstimateAverageSlope(yData);
+        double beta0 = avgSlope switch
+        {
+            <= 0.1 => 0.08,
+            <= 0.5 => 0.15,
+            <= 1.0 => 0.25,
+            _ => 0.35
+        };
 
         return new[] {
-            maxY * 1.5, // a
-            0.15,       // β
-            tau0        // τ
+            a0,
+            beta0,
+            tau0
         };
     }
 

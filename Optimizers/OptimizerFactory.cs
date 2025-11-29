@@ -1,3 +1,6 @@
+using BugConvergenceTool.Models;
+using BugConvergenceTool.Services;
+
 namespace BugConvergenceTool.Optimizers;
 
 /// <summary>
@@ -6,45 +9,118 @@ namespace BugConvergenceTool.Optimizers;
 public static class OptimizerFactory
 {
     /// <summary>
-    /// 指定タイプのオプティマイザを作成
+    /// 指定タイプのオプティマイザを作成（設定を使用）
     /// </summary>
     public static IOptimizer Create(OptimizerType type)
     {
+        var config = ConfigurationService.Current.Optimizers;
+        
         return type switch
         {
-            OptimizerType.GridSearchGradient => new GridSearchGradientOptimizer(),
-            OptimizerType.PSO => new PSOOptimizer(),
-            OptimizerType.DifferentialEvolution => new DEOptimizer(),
-            OptimizerType.GWO => new GWOOptimizer(),
-            OptimizerType.NelderMead => new NelderMeadOptimizer(),
-            OptimizerType.CMAES => new CMAESOptimizer(),
-            _ => new DEOptimizer() // デフォルトはDE
+            OptimizerType.GridSearchGradient => CreateGridSearchGradient(config.GridSearchGradient),
+            OptimizerType.PSO => CreatePSO(config.PSO),
+            OptimizerType.DifferentialEvolution => CreateDE(config.DE),
+            OptimizerType.GWO => CreateGWO(config.GWO),
+            OptimizerType.NelderMead => CreateNelderMead(config.NelderMead),
+            OptimizerType.CMAES => CreateCMAES(config.CMAES),
+            _ => CreateDE(config.DE) // デフォルトはDE
         };
     }
     
     /// <summary>
-    /// 全オプティマイザを取得
+    /// 全オプティマイザを取得（設定を使用）
     /// </summary>
     public static IEnumerable<IOptimizer> GetAllOptimizers()
     {
-        yield return new GridSearchGradientOptimizer();
-        yield return new PSOOptimizer();
-        yield return new DEOptimizer();
-        yield return new GWOOptimizer();
-        yield return new NelderMeadOptimizer();
-        yield return new CMAESOptimizer();
+        var config = ConfigurationService.Current.Optimizers;
+        
+        yield return CreateGridSearchGradient(config.GridSearchGradient);
+        yield return CreatePSO(config.PSO);
+        yield return CreateDE(config.DE);
+        yield return CreateGWO(config.GWO);
+        yield return CreateNelderMead(config.NelderMead);
+        yield return CreateCMAES(config.CMAES);
     }
     
     /// <summary>
-    /// メタヒューリスティックオプティマイザのみ取得
+    /// メタヒューリスティックオプティマイザのみ取得（設定を使用）
     /// </summary>
     public static IEnumerable<IOptimizer> GetMetaheuristicOptimizers()
     {
-        yield return new PSOOptimizer();
-        yield return new DEOptimizer();
-        yield return new GWOOptimizer();
-        yield return new CMAESOptimizer();
+        var config = ConfigurationService.Current.Optimizers;
+        
+        yield return CreatePSO(config.PSO);
+        yield return CreateDE(config.DE);
+        yield return CreateGWO(config.GWO);
+        yield return CreateCMAES(config.CMAES);
     }
+    
+    #region ファクトリメソッド
+    
+    private static DEOptimizer CreateDE(DESettings settings)
+    {
+        return new DEOptimizer(
+            populationSize: settings.PopulationSize,
+            maxIterations: settings.MaxIterations,
+            F: settings.F,
+            CR: settings.CR,
+            tolerance: settings.Tolerance
+        );
+    }
+    
+    private static PSOOptimizer CreatePSO(PSOSettings settings)
+    {
+        return new PSOOptimizer(
+            swarmSize: settings.SwarmSize,
+            maxIterations: settings.MaxIterations,
+            w: settings.W,
+            c1: settings.C1,
+            c2: settings.C2,
+            tolerance: settings.Tolerance
+        );
+    }
+    
+    private static CMAESOptimizer CreateCMAES(CMAESSettings settings)
+    {
+        return new CMAESOptimizer(
+            maxIterations: settings.MaxIterations,
+            tolerance: settings.Tolerance,
+            initialSigmaU: settings.InitialSigmaU
+        );
+    }
+    
+    private static GWOOptimizer CreateGWO(GWOSettings settings)
+    {
+        return new GWOOptimizer(
+            packSize: settings.PackSize,
+            maxIterations: settings.MaxIterations,
+            tolerance: settings.Tolerance
+        );
+    }
+    
+    private static NelderMeadOptimizer CreateNelderMead(NelderMeadSettings settings)
+    {
+        return new NelderMeadOptimizer(
+            maxIterations: settings.MaxIterations,
+            tolerance: settings.Tolerance,
+            alpha: settings.Alpha,
+            gamma: settings.Gamma,
+            rho: settings.Rho,
+            sigma: settings.Sigma
+        );
+    }
+    
+    private static GridSearchGradientOptimizer CreateGridSearchGradient(GridSearchGradientSettings settings)
+    {
+        return new GridSearchGradientOptimizer(
+            gridSize: settings.GridSize,
+            maxIterations: settings.MaxIterations,
+            learningRate: settings.LearningRate,
+            delta: settings.Delta
+        );
+    }
+    
+    #endregion
     
     /// <summary>
     /// 自動選択：全アルゴリズムで最適化し、最良の結果を返す

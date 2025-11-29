@@ -21,6 +21,29 @@ class Program
             return options.ShowHelp ? 0 : 1;
         }
         
+        // 設定ファイルの読み込み
+        if (!string.IsNullOrEmpty(options.ConfigFile))
+        {
+            ConfigurationService.Load(options.ConfigFile);
+        }
+        else
+        {
+            ConfigurationService.Load();
+        }
+        
+        // 設定の検証
+        var validationErrors = ConfigurationService.Validate();
+        if (validationErrors.Count > 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("設定ファイルに警告があります:");
+            foreach (var error in validationErrors)
+            {
+                Console.WriteLine($"  - {error}");
+            }
+            Console.ResetColor();
+        }
+        
         try
         {
             return RunAnalysis(options);
@@ -278,6 +301,12 @@ class Program
                     options.IncludeFRE = true;
                     options.IncludeCoverage = true;
                     break;
+                
+                case "-c":
+                case "--config":
+                    if (i + 1 < args.Length)
+                        options.ConfigFile = args[++i];
+                    break;
                     
                 default:
                     if (!args[i].StartsWith("-"))
@@ -326,6 +355,9 @@ class Program
         Console.WriteLine("  --coverage            Coverageモデルを含める");
         Console.WriteLine("  --all-extended        全拡張モデルを含める");
         Console.WriteLine();
+        Console.WriteLine("設定オプション:");
+        Console.WriteLine("  -c, --config FILE     設定ファイルを指定");
+        Console.WriteLine();
         Console.WriteLine("使用例:");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx -o ./output");
@@ -343,6 +375,11 @@ class Program
         Console.WriteLine("  行9  | バグ発生（日次）");
         Console.WriteLine("  行10 | バグ修正（日次）");
         Console.WriteLine();
+        Console.WriteLine("設定ファイル:");
+        Console.WriteLine("  config.json を実行ディレクトリまたは Templates フォルダに配置すると");
+        Console.WriteLine("  オプティマイザやモデルのパラメータをカスタマイズできます。");
+        Console.WriteLine("  --config オプションで明示的に指定することも可能です。");
+        Console.WriteLine();
     }
 }
 
@@ -350,6 +387,7 @@ class CommandOptions
 {
     public string? InputFile { get; set; }
     public string? OutputDir { get; set; }
+    public string? ConfigFile { get; set; }
     public bool ShowHelp { get; set; }
     public bool IncludeImperfectDebug { get; set; } = true;
     public bool Verbose { get; set; }

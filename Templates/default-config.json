@@ -1,0 +1,85 @@
+{
+  "Optimizers": {
+    "DE": {
+      "PopulationSize": 50,
+      "MaxIterations": 500,
+      "F": 0.8,
+      "CR": 0.9,
+      "Tolerance": 1e-10
+    },
+    "PSO": {
+      "SwarmSize": 30,
+      "MaxIterations": 500,
+      "W": 0.729,
+      "C1": 1.49445,
+      "C2": 1.49445,
+      "Tolerance": 1e-10
+    },
+    "CMAES": {
+      "MaxIterations": 500,
+      "InitialSigmaU": 0.5,
+      "Tolerance": 1e-10
+    },
+    "GWO": {
+      "PackSize": 30,
+      "MaxIterations": 500,
+      "Tolerance": 1e-10
+    },
+    "NelderMead": {
+      "MaxIterations": 1000,
+      "Tolerance": 1e-10,
+      "Alpha": 1.0,
+      "Gamma": 2.0,
+      "Rho": 0.5,
+      "Sigma": 0.5
+    },
+    "GridSearchGradient": {
+      "GridSize": 0,
+      "MaxIterations": 2000,
+      "LearningRate": 0.00005,
+      "Delta": 0.0001
+    }
+  },
+  "ModelInitialization": {
+    "ScaleFactorA": {
+      "ConvergedMin": 1.1,
+      "ConvergedMax": 1.4,
+      "NotConvergedMin": 1.5,
+      "NotConvergedMax": 1.9
+    },
+    "IncrementThreshold": {
+      "ConvergenceThreshold": 1.0
+    },
+    "AverageSlopeThresholds": {
+      "VeryLow": 0.1,
+      "Low": 0.5,
+      "Medium": 1.0,
+      "BValuesExponential": {
+        "VeryLow": 0.05,
+        "Low": 0.1,
+        "Medium": 0.2,
+        "High": 0.3
+      },
+      "BValuesSCurve": {
+        "VeryLow": 0.08,
+        "Low": 0.15,
+        "Medium": 0.25,
+        "High": 0.35
+      }
+    }
+  },
+  "ChangePoint": {
+    "CumulativeRatio": 0.5,
+    "MultipleChangePoints": {
+      "TwoPointRatios": [0.33, 0.67],
+      "ThreePointRatios": [0.25, 0.5, 0.75]
+    }
+  },
+  "ImperfectDebug": {
+    "P0": 0.1,
+    "Eta0": 0.8,
+    "EtaInfinity": 0.95,
+    "Alpha0": 0.1,
+    "GompertzB0": 2.0
+  }
+}
