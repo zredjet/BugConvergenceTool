@@ -5,17 +5,22 @@ namespace BugConvergenceTool.Services;
 
 /// <summary>
 /// 信頼区間計算サービス
-/// パラメトリック・ブートストラップ法により95%信頼区間を計算する
+/// パラメトリック・ブートストラップ法により信頼区間を計算する
 /// </summary>
 /// <remarks>
 /// 前提条件：
 /// - ReliabilityGrowthModelBase.Calculate は純粋関数（内部状態を持たない）であること
 /// - FittingResult.ParameterVector と PredictionTimes が事前にセットされていること
+/// 
+/// 設計方針：
+/// - ブートストラップ用には軽量 Nelder-Mead を使用（初期値は元の最適解θ*）
+/// - 擬似データはθ*からのわずかな揺らぎなので、真の最適解は大きく離れない前提
+/// - 収束失敗やSSEが極端に悪い解は破棄してフォールバック
 /// </remarks>
 public class ConfidenceIntervalService
 {
     private readonly IOptimizer _bootstrapOptimizer;
-    private readonly int _bootstrapIterations;
+    private readonly BootstrapSettings _settings;
     private readonly bool _verbose;
 
     // 並列環境でシードが衝突しない RNG
@@ -23,7 +28,24 @@ public class ConfidenceIntervalService
         new ThreadLocal<Random>(() => new Random(Guid.NewGuid().GetHashCode()));
 
     /// <summary>
-    /// コンストラクタ
+    /// コンストラクタ（設定クラスを使用）
+    /// </summary>
+    /// <param name="settings">ブートストラップ設定</param>
+    /// <param name="verbose">詳細出力するかどうか</param>
+    public ConfidenceIntervalService(BootstrapSettings settings, bool verbose = false)
+    {
+        _settings = settings;
+        _verbose = verbose;
+        
+        // 設定に基づいてブートストラップ用オプティマイザを作成
+        _bootstrapOptimizer = CreateBootstrapOptimizer(
+            _settings.OptimizerMaxIterations,
+            _settings.OptimizerTolerance
+        );
+    }
+
+    /// <summary>
+    /// コンストラクタ（後方互換性のため維持）
     /// </summary>
     /// <param name="bootstrapOptimizer">ブートストラップ用の軽量オプティマイザ</param>
     /// <param name="bootstrapIterations">ブートストラップ反復回数（デフォルト: 200）</param>
@@ -34,12 +56,15 @@ public class ConfidenceIntervalService
         bool verbose = false)
     {
         _bootstrapOptimizer = bootstrapOptimizer;
-        _bootstrapIterations = bootstrapIterations;
+        _settings = new BootstrapSettings
+        {
+            Iterations = bootstrapIterations
+        };
         _verbose = verbose;
     }
 
     /// <summary>
-    /// 95%信頼区間を計算し、FittingResult に設定する
+    /// 信頼区間を計算し、FittingResult に設定する
     /// </summary>
     /// <param name="model">信頼度成長モデル</param>
     /// <param name="tData">時刻データ（観測データ）</param>
@@ -64,6 +89,12 @@ public class ConfidenceIntervalService
 
         var originalParams = (double[])result.ParameterVector.Clone();
 
+        // 元のフィットのSSEを計算（フィルタリング用）
+        double originalSSE = model.CalculateSSE(tData, yData, originalParams);
+        double sseThreshold = _settings.SSEThresholdMultiplier > 0 
+            ? originalSSE * _settings.SSEThresholdMultiplier 
+            : double.MaxValue;
+
         // 1. 残差 e_i = y_i - m(t_i; θ*) を計算
         var residuals = new double[n];
         for (int i = 0; i < n; i++)
@@ -74,14 +105,15 @@ public class ConfidenceIntervalService
         // 2. ブートストラップ予測値の格納領域 [t][iter]
         var bootstrapPredictions = new double[predictionLength][];
         for (int i = 0; i < predictionLength; i++)
-            bootstrapPredictions[i] = new double[_bootstrapIterations];
+            bootstrapPredictions[i] = new double[_settings.Iterations];
 
-        // 3. 成功/失敗カウント用（スレッドセーフ）
+        // 3. 統計カウント用（スレッドセーフ）
         int successCount = 0;
         int fallbackCount = 0;
+        int sseFilteredCount = 0;
 
         // 4. Parallel.For でブートストラップ実行
-        Parallel.For(0, _bootstrapIterations, iter =>
+        Parallel.For(0, _settings.Iterations, iter =>
         {
             var random = _threadLocalRandom.Value!;
             var syntheticY = new double[n];
@@ -96,6 +128,8 @@ public class ConfidenceIntervalService
                 syntheticY[i] = y;
             }
 
+            double[] useParams = originalParams; // デフォルトはフォールバック
+
             try
             {
                 // 4-2. Bounds を再計算（擬似データに合わせて）
@@ -108,42 +142,53 @@ public class ConfidenceIntervalService
                     initialGuess: originalParams
                 );
 
-                double[] useParams;
                 if (optResult.Success)
                 {
-                    useParams = optResult.Parameters;
-                    Interlocked.Increment(ref successCount);
+                    // 4-4. SSE フィルタリング（極端に悪い解は破棄）
+                    double newSSE = model.CalculateSSE(tData, syntheticY, optResult.Parameters);
+                    
+                    if (newSSE <= sseThreshold)
+                    {
+                        useParams = optResult.Parameters;
+                        Interlocked.Increment(ref successCount);
+                    }
+                    else
+                    {
+                        // SSE が悪すぎる場合はフォールバック
+                        Interlocked.Increment(ref sseFilteredCount);
+                        Interlocked.Increment(ref fallbackCount);
+                    }
                 }
                 else
                 {
-                    useParams = originalParams; // フォールバック
                     Interlocked.Increment(ref fallbackCount);
-                }
-
-                // 4-4. 予測曲線を再計算（PredictionTimes ベース）
-                for (int t = 0; t < predictionLength; t++)
-                {
-                    double timePoint = result.PredictionTimes[t];
-                    bootstrapPredictions[t][iter] = model.Calculate(timePoint, useParams);
                 }
             }
             catch
             {
-                // 例外発生時もフォールバック（元の予測値）
+                // 例外発生時もフォールバック
                 Interlocked.Increment(ref fallbackCount);
-                for (int t = 0; t < predictionLength; t++)
-                {
-                    bootstrapPredictions[t][iter] = result.PredictedValues[t];
-                }
+            }
+
+            // 4-5. 予測曲線を計算（PredictionTimes ベース）
+            for (int t = 0; t < predictionLength; t++)
+            {
+                double timePoint = result.PredictionTimes[t];
+                bootstrapPredictions[t][iter] = model.Calculate(timePoint, useParams);
             }
         });
 
         if (_verbose)
         {
-            Console.WriteLine($"    ブートストラップ: 成功={successCount}, フォールバック={fallbackCount}");
+            Console.WriteLine($"    ブートストラップ: 成功={successCount}, フォールバック={fallbackCount}" +
+                (sseFilteredCount > 0 ? $" (SSEフィルタ={sseFilteredCount})" : ""));
         }
 
-        // 5. パーセンタイル法で 95% 信頼区間を計算
+        // 5. パーセンタイル法で信頼区間を計算
+        double alpha = 1.0 - _settings.ConfidenceLevel;
+        double lowerPercentile = alpha / 2.0;      // 例: 0.025 for 95%
+        double upperPercentile = 1.0 - alpha / 2.0; // 例: 0.975 for 95%
+
         var lowerBounds = new double[predictionLength];
         var upperBounds = new double[predictionLength];
 
@@ -152,9 +197,9 @@ public class ConfidenceIntervalService
             var samples = bootstrapPredictions[t];
             Array.Sort(samples);
 
-            int b = _bootstrapIterations;
-            int idxLow = (int)Math.Round((b - 1) * 0.025);
-            int idxHigh = (int)Math.Round((b - 1) * 0.975);
+            int b = _settings.Iterations;
+            int idxLow = (int)Math.Round((b - 1) * lowerPercentile);
+            int idxHigh = (int)Math.Round((b - 1) * upperPercentile);
 
             idxLow = Math.Clamp(idxLow, 0, b - 1);
             idxHigh = Math.Clamp(idxHigh, 0, b - 1);
@@ -179,5 +224,16 @@ public class ConfidenceIntervalService
             maxIterations: maxIterations,
             tolerance: tolerance
         );
+    }
+    
+    /// <summary>
+    /// 設定からブートストラップサービスを作成するファクトリメソッド
+    /// </summary>
+    /// <param name="verbose">詳細出力するかどうか</param>
+    /// <returns>設定済みの ConfidenceIntervalService</returns>
+    public static ConfidenceIntervalService CreateFromConfig(bool verbose = false)
+    {
+        var settings = ConfigurationService.Current.Bootstrap;
+        return new ConfidenceIntervalService(settings, verbose);
     }
 }

@@ -81,5 +81,13 @@
     "EtaInfinity": 0.95,
     "Alpha0": 0.1,
     "GompertzB0": 2.0
+  },
+  "Bootstrap": {
+    "Iterations": 200,
+    "ConfidenceLevel": 0.95,
+    "OptimizerMaxIterations": 80,
+    "OptimizerTolerance": 1e-6,
+    "SSEThresholdMultiplier": 10.0,
+    "RandomSeed": null
   }
 }

@@ -117,23 +117,32 @@ class Program
         // 2.5. 信頼区間の計算（オプション指定時）
         if (options.CalculateConfidenceInterval)
         {
-            Console.WriteLine($"95%信頼区間をブートストラップで計算中（{options.BootstrapIterations}回）...");
+            // 設定から反復回数を取得（CLIオプションで上書き可能）
+            var bootstrapSettings = ConfigurationService.Current.Bootstrap;
+            int iterations = options.BootstrapIterations > 0 
+                ? options.BootstrapIterations 
+                : bootstrapSettings.Iterations;
+            
+            // CLIで指定された場合は設定を上書き
+            if (options.BootstrapIterations > 0)
+            {
+                bootstrapSettings = new BootstrapSettings
+                {
+                    Iterations = iterations,
+                    ConfidenceLevel = bootstrapSettings.ConfidenceLevel,
+                    OptimizerMaxIterations = bootstrapSettings.OptimizerMaxIterations,
+                    OptimizerTolerance = bootstrapSettings.OptimizerTolerance,
+                    SSEThresholdMultiplier = bootstrapSettings.SSEThresholdMultiplier
+                };
+            }
+            
+            Console.WriteLine($"{bootstrapSettings.ConfidenceLevel * 100:F0}%信頼区間をブートストラップで計算中（{iterations}回）...");
             
             // ベストモデルのインスタンスを取得
             var bestModel = GetModelByName(bestResult.ModelName);
             if (bestModel != null)
             {
-                // ブートストラップ用の軽量オプティマイザを作成
-                var bootstrapOptimizer = ConfidenceIntervalService.CreateBootstrapOptimizer(
-                    maxIterations: 80,
-                    tolerance: 1e-6
-                );
-                
-                var ciService = new ConfidenceIntervalService(
-                    bootstrapOptimizer,
-                    options.BootstrapIterations,
-                    options.Verbose
-                );
+                var ciService = new ConfidenceIntervalService(bootstrapSettings, options.Verbose);
                 
                 try
                 {

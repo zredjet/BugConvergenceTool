@@ -24,7 +24,53 @@ public class ToolConfiguration
     /// 不完全デバッグ・FRE系のデフォルト設定
     /// </summary>
     public ImperfectDebugDefaults ImperfectDebug { get; set; } = new();
+    
+    /// <summary>
+    /// ブートストラップ信頼区間の設定
+    /// </summary>
+    public BootstrapSettings Bootstrap { get; set; } = new();
 }
+
+#region ブートストラップ設定
+
+/// <summary>
+/// ブートストラップ法による信頼区間計算の設定
+/// </summary>
+public class BootstrapSettings
+{
+    /// <summary>
+    /// ブートストラップ反復回数（デフォルト: 200）
+    /// </summary>
+    public int Iterations { get; set; } = 200;
+    
+    /// <summary>
+    /// 信頼水準（デフォルト: 0.95 = 95%信頼区間）
+    /// </summary>
+    public double ConfidenceLevel { get; set; } = 0.95;
+    
+    /// <summary>
+    /// ブートストラップ用オプティマイザの最大反復回数（デフォルト: 80）
+    /// </summary>
+    public int OptimizerMaxIterations { get; set; } = 80;
+    
+    /// <summary>
+    /// ブートストラップ用オプティマイザの収束判定閾値（デフォルト: 1e-6）
+    /// </summary>
+    public double OptimizerTolerance { get; set; } = 1e-6;
+    
+    /// <summary>
+    /// SSE が元の何倍以上悪い場合に破棄するか（デフォルト: 10.0）
+    /// 0以下で無効化
+    /// </summary>
+    public double SSEThresholdMultiplier { get; set; } = 10.0;
+    
+    /// <summary>
+    /// ランダムシード（null で自動生成）
+    /// </summary>
+    public int? RandomSeed { get; set; }
+}
+
+#endregion
 
 #region オプティマイザ設定
 

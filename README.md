@@ -591,6 +591,7 @@ u(t) = b₁·τ + b₂·(t-τ) （t > τ）
 2. **ブートストラップ最適化**
    - 擬似データに対して軽量オプティマイザ（Nelder-Mead、MaxIterations=80）で再フィッティング
    - 初期値には元の最適解 θ\* を使用
+   - SSE が元の10倍以上悪い解は破棄（ロバスト化）
 
 3. **信頼区間の計算**
    - 指定回数（デフォルト: 200回）のブートストラップを並列実行
@@ -606,16 +607,43 @@ BugConvergenceTool TestData.xlsx --ci
 BugConvergenceTool TestData.xlsx --ci --bootstrap 500 -v
 ```
 
+### ブートストラップ設定（config.json）
+
+`config.json` でブートストラップの詳細設定をカスタマイズできます。
+
+```json
+{
+  "Bootstrap": {
+    "Iterations": 200,
+    "ConfidenceLevel": 0.95,
+    "OptimizerMaxIterations": 80,
+    "OptimizerTolerance": 1e-6,
+    "SSEThresholdMultiplier": 10.0,
+    "RandomSeed": null
+  }
+}
+```
+
+| パラメータ | デフォルト | 説明 |
+|-----------|-----------|------|
+| `Iterations` | 200 | ブートストラップ反復回数 |
+| `ConfidenceLevel` | 0.95 | 信頼水準（0.90 で90%信頼区間、0.99 で99%信頼区間） |
+| `OptimizerMaxIterations` | 80 | ブートストラップ用Nelder-Meadの最大反復回数 |
+| `OptimizerTolerance` | 1e-6 | ブートストラップ用オプティマイザの収束判定閾値 |
+| `SSEThresholdMultiplier` | 10.0 | SSEが元のこの倍数以上悪い解を破棄（0以下で無効） |
+| `RandomSeed` | null | ランダムシード（null で自動生成、再現性が必要な場合に指定） |
+
 ### 出力
 
-信頼区間を計算すると、信頼度成長曲線のグラフ（`reliability_growth.png`）に95%予測区間が半透明の帯として描画されます。
+信頼区間を計算すると、信頼度成長曲線のグラフ（`reliability_growth.png`）に予測区間が半透明の帯として描画されます。
 
 ### 注意事項
 
 - **計算時間**: ブートストラップは多数の最適化を実行するため、通常の分析より時間がかかります
 - **スレッドセーフティ**: `ReliabilityGrowthModelBase.Calculate` は純粋関数（内部状態を持たない）である前提で並列実行されます
-- **フォールバック**: ブートストラップ最適化が収束しない場合は元の最適解を使用します
-- **軽量オプティマイザ**: ブートストラップでは Nelder-Mead（MaxIterations=80）を使用して計算コストを抑えています
+- **フォールバック**: ブートストラップ最適化が収束しない場合、またはSSEが閾値を超える場合は元の最適解を使用します
+- **軽量オプティマイザ**: ブートストラップでは Nelder-Mead を使用。初期値が元の最適解θ\*なので、局所探索で十分な場合が多い
+- **変化点モデル等の多峰性**: 局所極小が多いモデルでは、フォールバック率が高くなる可能性があります
 
 ## ライセンス
 
