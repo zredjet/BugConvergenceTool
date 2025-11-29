@@ -68,7 +68,11 @@ public class ModelFitter
                 result.Parameters[model.ParameterNames[i]] = parameters[i];
             }
             
-            // 予測値を計算
+            // 信頼区間計算用：パラメータベクトル（順序を保持）
+            result.ParameterVector = (double[])parameters.Clone();
+            
+            // 予測時刻と予測値を計算
+            result.PredictionTimes = (double[])_tData.Clone();
             result.PredictedValues = _tData.Select(t => model.Calculate(t, parameters)).ToArray();
             
             // 適合度指標を計算

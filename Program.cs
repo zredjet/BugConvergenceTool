@@ -114,6 +114,46 @@ class Program
             return 1;
         }
         
+        // 2.5. 信頼区間の計算（オプション指定時）
+        if (options.CalculateConfidenceInterval)
+        {
+            Console.WriteLine($"95%信頼区間をブートストラップで計算中（{options.BootstrapIterations}回）...");
+            
+            // ベストモデルのインスタンスを取得
+            var bestModel = GetModelByName(bestResult.ModelName);
+            if (bestModel != null)
+            {
+                // ブートストラップ用の軽量オプティマイザを作成
+                var bootstrapOptimizer = ConfidenceIntervalService.CreateBootstrapOptimizer(
+                    maxIterations: 80,
+                    tolerance: 1e-6
+                );
+                
+                var ciService = new ConfidenceIntervalService(
+                    bootstrapOptimizer,
+                    options.BootstrapIterations,
+                    options.Verbose
+                );
+                
+                try
+                {
+                    ciService.CalculateIntervals(
+                        bestModel,
+                        testData.GetTimeData(),
+                        testData.GetCumulativeBugsFound(),
+                        bestResult
+                    );
+                    Console.WriteLine("  信頼区間の計算完了");
+                }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"  信頼区間の計算に失敗: {ex.Message}");
+                    Console.ResetColor();
+                }
+            }
+        }
+        
         // 3. 結果表示
         PrintResults(results, bestResult, options.Verbose);
         
@@ -206,6 +246,22 @@ class Program
             }
             Console.ResetColor();
         }
+    }
+    
+    /// <summary>
+    /// モデル名からモデルインスタンスを取得
+    /// </summary>
+    static ReliabilityGrowthModelBase? GetModelByName(string modelName)
+    {
+        // 全拡張モデルから検索
+        var allModels = ModelFactory.GetAllExtendedModels(
+            includeChangePoint: true,
+            includeTEF: true,
+            includeFRE: true,
+            includeCoverage: true);
+        
+        return allModels.FirstOrDefault(m => m.Name == modelName)
+            ?? ModelFactory.GetAllModels().FirstOrDefault(m => m.Name == modelName);
     }
     
     static string FindTemplatePath()
@@ -307,6 +363,16 @@ class Program
                     if (i + 1 < args.Length)
                         options.ConfigFile = args[++i];
                     break;
+                
+                case "--ci":
+                case "--confidence-interval":
+                    options.CalculateConfidenceInterval = true;
+                    break;
+                
+                case "--bootstrap":
+                    if (i + 1 < args.Length && int.TryParse(args[++i], out int bootIter))
+                        options.BootstrapIterations = Math.Max(50, bootIter);
+                    break;
                     
                 default:
                     if (!args[i].StartsWith("-"))
@@ -358,6 +424,11 @@ class Program
         Console.WriteLine("設定オプション:");
         Console.WriteLine("  -c, --config FILE     設定ファイルを指定");
         Console.WriteLine();
+        Console.WriteLine("信頼区間オプション:");
+        Console.WriteLine("  --ci, --confidence-interval");
+        Console.WriteLine("                        95%信頼区間を計算（ブートストラップ法）");
+        Console.WriteLine("  --bootstrap N         ブートストラップ反復回数（デフォルト: 200）");
+        Console.WriteLine();
         Console.WriteLine("使用例:");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx -o ./output");
@@ -399,4 +470,8 @@ class CommandOptions
     public bool IncludeFRE { get; set; } = false;
     public bool IncludeCoverage { get; set; } = false;
     public bool AllExtended { get; set; } = false;
+    
+    // 信頼区間オプション
+    public bool CalculateConfidenceInterval { get; set; } = false;
+    public int BootstrapIterations { get; set; } = 200;
 }

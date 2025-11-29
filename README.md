@@ -50,6 +50,8 @@ BugConvergenceTool <入力Excel> [オプション]
 | `--fre` | 欠陥除去効率モデルを含める |
 | `--coverage` | Coverageモデルを含める |
 | `--all-extended` | 全拡張モデルを含める |
+| `--ci`, `--confidence-interval` | 95%信頼区間を計算（ブートストラップ法） |
+| `--bootstrap N` | ブートストラップ反復回数（デフォルト: 200） |
 
 ### 使用例
 
@@ -72,8 +74,12 @@ BugConvergenceTool TestData.xlsx --coverage          # Coverageモデル
 BugConvergenceTool TestData.xlsx --all-extended      # 全拡張モデル
 BugConvergenceTool TestData.xlsx --all-extended -v   # 詳細出力付き
 
+# 信頼区間付き分析
+BugConvergenceTool TestData.xlsx --ci                # 95%信頼区間を計算
+BugConvergenceTool TestData.xlsx --ci --bootstrap 500  # 反復回数を増やして精度向上
+
 # 組み合わせ
-BugConvergenceTool TestData.xlsx --optimizer auto --all-extended -o ./results -v
+BugConvergenceTool TestData.xlsx --optimizer auto --all-extended --ci -o ./results -v
 ```
 
 ## 入力Excelの形式
@@ -570,6 +576,46 @@ u(t) = b₁·τ + b₂·(t-τ) （t > τ）
   }
 }
 ```
+
+## 信頼区間（ブートストラップ法）
+
+`--ci` オプションを指定すると、最適モデルの予測曲線に対して95%信頼区間を計算します。
+
+### アルゴリズム概要
+
+1. **残差リサンプリング（パラメトリック・ブートストラップ）**
+   - 元の最適解 θ\* で残差 e\_i = y\_i - m(t\_i; θ\*) を計算
+   - 残差をランダムに再サンプリングして擬似データを生成
+   - 累積バグ数は非負にクリップ
+
+2. **ブートストラップ最適化**
+   - 擬似データに対して軽量オプティマイザ（Nelder-Mead、MaxIterations=80）で再フィッティング
+   - 初期値には元の最適解 θ\* を使用
+
+3. **信頼区間の計算**
+   - 指定回数（デフォルト: 200回）のブートストラップを並列実行
+   - 各時刻 t について予測値のパーセンタイル（2.5%, 97.5%）を計算
+
+### 信頼区間の使用例
+
+```bash
+# 基本的な信頼区間計算
+BugConvergenceTool TestData.xlsx --ci
+
+# 反復回数を増やして精度向上（時間がかかる）
+BugConvergenceTool TestData.xlsx --ci --bootstrap 500 -v
+```
+
+### 出力
+
+信頼区間を計算すると、信頼度成長曲線のグラフ（`reliability_growth.png`）に95%予測区間が半透明の帯として描画されます。
+
+### 注意事項
+
+- **計算時間**: ブートストラップは多数の最適化を実行するため、通常の分析より時間がかかります
+- **スレッドセーフティ**: `ReliabilityGrowthModelBase.Calculate` は純粋関数（内部状態を持たない）である前提で並列実行されます
+- **フォールバック**: ブートストラップ最適化が収束しない場合は元の最適解を使用します
+- **軽量オプティマイザ**: ブートストラップでは Nelder-Mead（MaxIterations=80）を使用して計算コストを抑えています
 
 ## ライセンス
 

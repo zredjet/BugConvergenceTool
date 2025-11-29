@@ -194,26 +194,57 @@ public class ChartGenerator
         var actualDays = Enumerable.Range(1, n).Select(i => (double)i).ToArray();
         var actualBugs = _testData.GetCumulativeBugsFound();
         
+        // X軸は PredictionTimes を優先して使用（信頼区間と合わせるため）
+        double[] xAxis;
+        double[] predBugs;
+        var model = GetModelFromResult(result);
+        
+        if (result.PredictionTimes != null && result.PredictionTimes.Length > 0)
+        {
+            // FittingResult に格納された予測時刻を使用
+            xAxis = result.PredictionTimes;
+            predBugs = result.PredictedValues;
+        }
+        else
+        {
+            // 従来の方式：2倍の期間まで予測
+            xAxis = Enumerable.Range(1, predDays).Select(i => (double)i).ToArray();
+            var parameters = result.Parameters.Values.ToArray();
+            predBugs = xAxis.Select(t => model.Calculate(t, parameters)).ToArray();
+        }
+        
+        // 1. 信頼区間帯（ある場合）
+        if (result.LowerConfidenceBounds != null &&
+            result.UpperConfidenceBounds != null &&
+            result.LowerConfidenceBounds.Length == xAxis.Length)
+        {
+            var fill = plt.Add.FillY(
+                xAxis,
+                result.LowerConfidenceBounds,
+                result.UpperConfidenceBounds
+            );
+            
+            // 半透明の赤色で塗りつぶし（アルファ値 0-1 の範囲）
+            fill.FillColor = Colors.Red.WithAlpha(0.2);
+            fill.LegendText = "95%予測区間";
+        }
+        
+        // 2. 実績データ
         var actualPlot = plt.Add.Scatter(actualDays, actualBugs);
         actualPlot.LegendText = "実績（累積バグ）";
         actualPlot.LineWidth = 0;
         actualPlot.MarkerSize = 8;
         actualPlot.Color = Colors.Blue;
         
-        // 予測曲線
-        var predDaysArray = Enumerable.Range(1, predDays).Select(i => (double)i).ToArray();
-        var model = GetModelFromResult(result);
-        var parameters = result.Parameters.Values.ToArray();
-        var predBugs = predDaysArray.Select(t => model.Calculate(t, parameters)).ToArray();
-        
-        var predPlot = plt.Add.Scatter(predDaysArray, predBugs);
+        // 3. 予測曲線
+        var predPlot = plt.Add.Scatter(xAxis, predBugs);
         predPlot.LegendText = $"予測曲線（{result.ModelName}）";
         predPlot.LineWidth = 2;
         predPlot.MarkerSize = 0;
         predPlot.Color = Colors.Red;
         predPlot.LineStyle.Pattern = LinePattern.Dashed;
         
-        // 潜在バグ総数ライン
+        // 4. 潜在バグ総数ライン
         double totalBugs = result.EstimatedTotalBugs;
         var totalLine = plt.Add.HorizontalLine(totalBugs);
         totalLine.LegendText = $"推定潜在バグ総数 ({totalBugs:F0})";
@@ -227,8 +258,12 @@ public class ChartGenerator
         plt.Legend.IsVisible = true;
         plt.Legend.Alignment = Alignment.LowerRight;
         
-        // 注釈
-        var annotation = $"R² = {result.R2:F4}\n推定残バグ: {totalBugs - actualBugs.Last():F1}";
+        // 注釈（信頼区間がある場合はその旨を追記）
+        string annotation = $"R² = {result.R2:F4}\n推定残バグ: {totalBugs - actualBugs.Last():F1}";
+        if (result.LowerConfidenceBounds != null)
+        {
+            annotation += "\n（95%信頼区間付き）";
+        }
         plt.Add.Annotation(annotation, Alignment.UpperLeft);
         
         plt.SavePng(filePath, _width, _height);

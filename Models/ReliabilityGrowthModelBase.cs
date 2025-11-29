@@ -30,6 +30,16 @@ public class FittingResult
     public string OptimizerUsed { get; set; } = "";
     public long OptimizationTimeMs { get; set; }
     public int FunctionEvaluations { get; set; }
+    
+    // 信頼区間計算用：最適化時のパラメータベクトル（順序を保持）
+    public double[] ParameterVector { get; set; } = Array.Empty<double>();
+    
+    // 信頼区間計算用：予測時刻（PredictedValues に対応する X 軸）
+    public double[] PredictionTimes { get; set; } = Array.Empty<double>();
+    
+    // 95%信頼区間（ブートストラップ法で計算）
+    public double[]? LowerConfidenceBounds { get; set; }
+    public double[]? UpperConfidenceBounds { get; set; }
 }
 
 /// <summary>
