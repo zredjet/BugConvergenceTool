@@ -85,6 +85,16 @@ public class FittingResult
     /// 警告メッセージのリスト
     /// </summary>
     public List<string> Warnings { get; set; } = new();
+    
+    /// <summary>
+    /// 感度分析結果（推定総バグ数に対する感度）
+    /// </summary>
+    public Services.SensitivityReport? SensitivityAnalysis { get; set; }
+    
+    /// <summary>
+    /// 変化点探索結果（変化点モデルの場合のみ）
+    /// </summary>
+    public Services.ChangePointSearchResult? ChangePointSearchResult { get; set; }
 }
 
 /// <summary>

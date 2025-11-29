@@ -229,6 +229,74 @@ public class ReportGenerator
         }
         sb.AppendLine();
         
+        // 感度分析セクション
+        if (bestResult.SensitivityAnalysis != null && bestResult.SensitivityAnalysis.Items.Count > 0)
+        {
+            sb.AppendLine("--------------------------------------------------------------------------------");
+            sb.AppendLine("【感度分析（パラメータ感度）】");
+            sb.AppendLine("--------------------------------------------------------------------------------");
+            sb.AppendLine();
+            sb.AppendLine($"  分析対象: {bestResult.SensitivityAnalysis.TargetMetricName}");
+            sb.AppendLine($"  基準値:   {bestResult.SensitivityAnalysis.TargetMetricValue:F2}");
+            sb.AppendLine($"  摂動率:   ±{bestResult.SensitivityAnalysis.PerturbationPercent:F1}%");
+            sb.AppendLine($"  総合ロバスト性: {bestResult.SensitivityAnalysis.OverallRobustness}");
+            sb.AppendLine();
+            sb.AppendLine($"{"パラメータ",-12} {"推定値",12} {"弾力性",12} {"ロバスト性",12} {"方向性",8}");
+            sb.AppendLine(new string('-', 60));
+            
+            foreach (var item in bestResult.SensitivityAnalysis.Items.OrderByDescending(i => Math.Abs(i.Elasticity)))
+            {
+                sb.AppendLine($"{item.ParameterName,-12} {item.ParameterValue,12:F4} {item.Elasticity,12:F2} {item.Robustness,12} {item.Direction,8}");
+            }
+            sb.AppendLine();
+            sb.AppendLine("  * 弾力性: パラメータが1%変化した時の予測値の変化率（%）");
+            sb.AppendLine("  * ロバスト性: 高=安定 (|E|<1), 中=注意 (1≤|E|<5), 低=不安定 (|E|≥5)");
+            sb.AppendLine();
+            
+            // 感度分析の警告
+            if (bestResult.SensitivityAnalysis.Warnings.Count > 0)
+            {
+                sb.AppendLine("  ⚠ 感度分析の警告:");
+                foreach (var warning in bestResult.SensitivityAnalysis.Warnings)
+                {
+                    sb.AppendLine($"    {warning}");
+                }
+                sb.AppendLine();
+            }
+        }
+        
+        // 変化点探索結果セクション
+        if (bestResult.ChangePointSearchResult != null && bestResult.ChangePointSearchResult.Success)
+        {
+            var cpResult = bestResult.ChangePointSearchResult;
+            sb.AppendLine("--------------------------------------------------------------------------------");
+            sb.AppendLine("【変化点探索結果（プロファイル尤度法）】");
+            sb.AppendLine("--------------------------------------------------------------------------------");
+            sb.AppendLine();
+            sb.AppendLine($"  最適変化点:     τ = {cpResult.BestTau} 日目");
+            sb.AppendLine($"  最小AICc:       {cpResult.BestAICc:F2}");
+            sb.AppendLine($"  変化点の信頼性: {cpResult.ChangePointReliability}");
+            sb.AppendLine($"  探索時間:       {cpResult.ElapsedMilliseconds}ms");
+            sb.AppendLine();
+            
+            // プロファイルAICcの概要（上位5候補）
+            if (cpResult.ProfileAICc.Count > 1)
+            {
+                sb.AppendLine("  AICcプロファイル（上位5候補）:");
+                var topCandidates = cpResult.ProfileAICc
+                    .OrderBy(x => x.Value)
+                    .Take(5)
+                    .ToList();
+                
+                foreach (var (tau, aicc) in topCandidates)
+                {
+                    string marker = tau == cpResult.BestTau ? " *" : "";
+                    sb.AppendLine($"    τ={tau,3}: AICc={aicc,10:F2}{marker}");
+                }
+                sb.AppendLine();
+            }
+        }
+        
         // 不完全デバッグに関する注意
         if (bestResult.ImperfectDebugRate.HasValue && bestResult.ImperfectDebugRate.Value > 0.1)
         {

@@ -165,6 +165,28 @@ public class ModelFitter
             // 収束予測を計算
             CalculateConvergencePredictions(model, parameters, result);
             
+            // 感度分析を実行（推定総バグ数に対する感度）
+            try
+            {
+                var sensitivityService = new SensitivityAnalysisService();
+                result.SensitivityAnalysis = sensitivityService.AnalyzeTotalBugsSensitivity(model, parameters);
+                
+                // 感度分析の警告を結果に追加
+                if (result.SensitivityAnalysis.Warnings.Count > 0)
+                {
+                    result.Warnings.AddRange(result.SensitivityAnalysis.Warnings);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (_verbose)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"  [{model.Name}] 感度分析に失敗: {ex.Message}");
+                    Console.ResetColor();
+                }
+            }
+            
             result.Success = true;
         }
         catch (Exception ex)
@@ -326,6 +348,132 @@ public class ModelFitter
             }
             
             result.ConvergencePredictions[name] = prediction;
+        }
+    }
+    
+    /// <summary>
+    /// 変化点モデルに対してプロファイル尤度法による堅牢な変化点探索を実行
+    /// </summary>
+    /// <param name="changePointModel">変化点モデル</param>
+    /// <param name="useRobustDetection">堅牢な変化点検出を使用するか</param>
+    /// <returns>フィッティング結果（変化点探索結果を含む）</returns>
+    public FittingResult FitChangePointModel(ChangePointModelBase changePointModel, bool useRobustDetection = true)
+    {
+        if (!useRobustDetection)
+        {
+            // 従来の方法でフィッティング
+            return FitModel(changePointModel);
+        }
+        
+        if (_verbose)
+        {
+            Console.WriteLine($"  [{changePointModel.Name}] プロファイル尤度法による変化点探索を開始...");
+        }
+        
+        // プロファイル尤度法による変化点探索
+        var detector = new RobustChangePointDetector(
+            optimizerType: _optimizerType == OptimizerType.AutoSelect ? OptimizerType.NelderMead : _optimizerType,
+            lossType: _lossType,
+            verbose: _verbose);
+        
+        var searchResult = detector.FindOptimalChangePoint(
+            changePointModel,
+            _tData,
+            _yData,
+            _yFixedData);
+        
+        if (!searchResult.Success || searchResult.BestFittingResult == null)
+        {
+            if (_verbose)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  [{changePointModel.Name}] 変化点探索に失敗: {searchResult.ErrorMessage}");
+                Console.ResetColor();
+            }
+            
+            // フォールバック: 従来の方法でフィッティング
+            var fallbackResult = FitModel(changePointModel);
+            fallbackResult.Warnings.Add("変化点探索に失敗したため、従来の方法でフィッティングしました。");
+            return fallbackResult;
+        }
+        
+        // 最適な変化点でのフィッティング結果を取得
+        var result = searchResult.BestFittingResult;
+        result.ChangePointSearchResult = searchResult;
+        
+        // 変化点の信頼性に関する警告を追加
+        if (searchResult.ChangePointReliability.Contains("非常に低") || searchResult.ChangePointReliability.Contains("低"))
+        {
+            result.Warnings.Add($"変化点の信頼性が{searchResult.ChangePointReliability}です。変化点なしのモデルも検討してください。");
+        }
+        
+        // ホールドアウト検証
+        if (_splitResult != null && _splitResult.IsValid)
+        {
+            PerformHoldoutValidationForChangePoint(changePointModel, result);
+        }
+        
+        // 収束予測を計算
+        CalculateConvergencePredictions(changePointModel, result.ParameterVector, result);
+        
+        // 感度分析を実行
+        try
+        {
+            var sensitivityService = new SensitivityAnalysisService();
+            result.SensitivityAnalysis = sensitivityService.AnalyzeTotalBugsSensitivity(
+                changePointModel, result.ParameterVector);
+            
+            if (result.SensitivityAnalysis.Warnings.Count > 0)
+            {
+                result.Warnings.AddRange(result.SensitivityAnalysis.Warnings);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_verbose)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  [{changePointModel.Name}] 感度分析に失敗: {ex.Message}");
+                Console.ResetColor();
+            }
+        }
+        
+        if (_verbose)
+        {
+            Console.WriteLine($"  [{changePointModel.Name}] 最適変化点: τ={searchResult.BestTau}, " +
+                $"信頼性: {searchResult.ChangePointReliability}");
+        }
+        
+        return result;
+    }
+    
+    /// <summary>
+    /// 変化点モデル用のホールドアウト検証
+    /// </summary>
+    private void PerformHoldoutValidationForChangePoint(ChangePointModelBase model, FittingResult result)
+    {
+        if (_splitResult == null || !_splitResult.IsValid) return;
+        
+        // テストデータに対する予測（固定τモデルの予測値を使用）
+        var predictions = new double[_splitResult.TestTimes.Length];
+        for (int i = 0; i < _splitResult.TestTimes.Length; i++)
+        {
+            double t = _splitResult.TestTimes[i];
+            predictions[i] = model.Calculate(t, result.ParameterVector);
+        }
+        
+        // 評価指標の計算
+        var validation = ValidationUtility.CalculateMetrics(predictions, _splitResult.TestValues);
+        
+        result.HoldoutMse = validation.Mse;
+        result.HoldoutMape = validation.Mape;
+        result.HoldoutMae = validation.Mae;
+        
+        result.Warnings.AddRange(validation.Warnings);
+        
+        if (_verbose)
+        {
+            Console.WriteLine($"    -> ホールドアウト検証: MSE={validation.Mse:F4}, MAPE={validation.Mape:F2}%");
         }
     }
 }
