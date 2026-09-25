@@ -38,21 +38,53 @@ public class ExcelWriter
         workbook.SaveAs(outputPath);
     }
     
+    /// <summary>
+    /// 「データ入力」シートに入力データ（観測期間）と累積値を書き込む
+    /// </summary>
+    /// <remarks>
+    /// 以前は累積値（行12〜19）だけを書き込んでいたため、行2〜10 にテンプレートのサンプルデータ
+    /// （プロジェクト情報と20日分の日次データ）が残り、累積値と食い違っていた。
+    /// </remarks>
     private void WriteDataSheet(XLWorkbook workbook)
     {
         var ws = workbook.Worksheet("データ入力");
-        
+
         int n = _testData.DayCount;
         var cumulativePlanned = _testData.GetCumulativePlanned();
         var cumulativeActual = _testData.GetCumulativeActual();
         var cumulativeFound = _testData.GetCumulativeBugsFound();
         var cumulativeFixed = _testData.GetCumulativeBugsFixed();
         var remaining = _testData.GetRemainingBugs();
-        
-        // 累積データを行12-16に書き込み
+
+        // プロジェクト情報
+        ws.Cell("B2").Value = _testData.ProjectName;
+        ws.Cell("B3").Value = _testData.TotalTestCases;
+        ws.Cell("B4").Value = _testData.StartDate.HasValue ? _testData.StartDate.Value : Blank.Value;
+
+        // テンプレートの日次データ（行6〜19）を消す。書式は残す
+        int templateLastCol = Math.Max(2, ws.Row(6).LastCellUsed()?.Address.ColumnNumber ?? 2);
+        ws.Range(6, 2, 19, Math.Max(templateLastCol, n + 1)).Clear(XLClearOptions.Contents);
+
+        // テンプレートより日数が多い場合は、最終列の書式と列幅を引き継ぐ
+        for (int col = templateLastCol + 1; col <= n + 1; col++)
+        {
+            for (int row = 6; row <= 19; row++)
+                ws.Cell(row, col).Style = ws.Cell(row, templateLastCol).Style;
+            ws.Column(col).Width = ws.Column(templateLastCol).Width;
+        }
+
         for (int i = 0; i < n; i++)
         {
             int col = i + 2;
+
+            // 日次データ（行6〜10）
+            ws.Cell(6, col).Value = _testData.Dates[i];
+            ws.Cell(7, col).Value = _testData.PlannedDaily[i];
+            ws.Cell(8, col).Value = _testData.ActualDaily[i];
+            ws.Cell(9, col).Value = _testData.BugsFoundDaily[i];
+            ws.Cell(10, col).Value = _testData.BugsFixedDaily[i];
+
+            // 累積データ（行12〜16）
             ws.Cell(12, col).Value = cumulativePlanned[i];
             ws.Cell(13, col).Value = cumulativeActual[i];
             ws.Cell(14, col).Value = cumulativeFound[i];
