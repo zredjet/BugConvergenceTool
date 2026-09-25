@@ -92,9 +92,6 @@ public class GWOOptimizer : IOptimizer
             result.ConvergenceHistory.Add(alphaFitness);
             
             // メインループ
-            double previousBest = alphaFitness;
-            int stagnationCount = 0;
-            
             for (int iter = 0; iter < _maxIterations; iter++)
             {
                 // a は 2 から 0 に線形減少
@@ -146,29 +143,32 @@ public class GWOOptimizer : IOptimizer
                 }
                 
                 result.ConvergenceHistory.Add(alphaFitness);
-                
-                // 収束判定（相対収束）
-                // GWO は係数 a を 2→0 に減らして大域探索から局所探索に移る。a ≥ 1 の間は群れが
-                // リーダーから離れる方向にも動く探索段階で最良値が停滞しやすいため、停滞による打ち切りは
-                // 局所探索段階（a < 1、反復の後半）に入ってからだけ行う（以前は探索段階で打ち切られていた）
-                double relativeChange = Math.Abs(previousBest - alphaFitness) / 
-                                        (Math.Abs(previousBest) + 1e-10);
-                if (relativeChange < _tolerance && a < 1.0)
-                {
-                    stagnationCount++;
-                    if (stagnationCount > 50)
-                    {
-                        result.Converged = true;
-                        break;
-                    }
-                }
-                else
-                {
-                    stagnationCount = 0;
-                }
-                previousBest = alphaFitness;
-                
                 result.Iterations = iter + 1;
+                
+                // 収束判定: α・β・δ の位置が（探索範囲に対して）十分近づき、適合度もそろったときだけ止める。
+                // 以前は最良値が 50 反復更新されないだけで Converged=true として打ち切っていたが、
+                // GWO は a → 0 の終盤まで群れが縮まないため、SSE のように値の大きい目的関数では
+                // 探索の途中で止まり、最適値に届かないまま「収束」と報告していた
+                if (a < 1.0 && LeadersCollapsed(alpha, beta, delta, lowerBounds, upperBounds)
+                    && deltaFitness - alphaFitness <= _tolerance * (1 + Math.Abs(alphaFitness)))
+                {
+                    result.Converged = true;
+                    break;
+                }
+            }
+            
+            // GWO の群れは終盤まで縮みきらず、最良解の精度が低い（相対誤差 1e-5〜1e-2 程度残る）。
+            // α から Nelder-Mead で局所的に仕上げ、収束の判定もその結果に従う
+            if (!result.Converged && OptimizationResult.IsValidObjective(alphaFitness))
+            {
+                var polish = new NelderMeadOptimizer().Optimize(objectiveFunction, lowerBounds, upperBounds, alpha);
+                evaluations += polish.FunctionEvaluations;
+                if (polish.Success && polish.ObjectiveValue <= alphaFitness)
+                {
+                    alpha = (double[])polish.Parameters.Clone();
+                    alphaFitness = polish.ObjectiveValue;
+                }
+                result.Converged = polish.Converged;
             }
             
             result.Parameters = (double[])alpha.Clone();
@@ -186,6 +186,19 @@ public class GWOOptimizer : IOptimizer
         result.ElapsedMilliseconds = stopwatch.ElapsedMilliseconds;
         
         return result;
+    }
+    
+    /// <summary>
+    /// α・β・δ の位置の差が、どの次元でも探索範囲の 1e-8 以下か
+    /// </summary>
+    private static bool LeadersCollapsed(double[] alpha, double[] beta, double[] delta, double[] lower, double[] upper)
+    {
+        for (int d = 0; d < alpha.Length; d++)
+        {
+            double scale = 1e-8 * Math.Max(upper[d] - lower[d], 1e-12);
+            if (Math.Abs(alpha[d] - beta[d]) > scale || Math.Abs(alpha[d] - delta[d]) > scale) return false;
+        }
+        return true;
     }
     
     /// <summary>
