@@ -367,7 +367,7 @@ public class ModelFitter
     /// 規模パラメータ a（全モデルで先頭）が上限に張り付いている場合、尤度は a をさらに大きくすると改善する状態で、
     /// 潜在バグ総数はデータから推定できていない（上限の値がそのまま出ているだけ）。
     /// このモデルは推奨の対象から外す。
-    /// その他のパラメータの張り付きは注意として警告する（ψ=0 や η=1 のような自然な境界は除く）。
+    /// その他のパラメータの張り付きは注意として警告する（ln ψ の下限や η=1 のような自然な境界は除く。<see cref="ReliabilityGrowthModelBase.IsNaturalBound"/>）。
     /// </remarks>
     private void CheckParameterBounds(ReliabilityGrowthModelBase model, double[] parameters, FittingResult result)
     {
@@ -401,8 +401,8 @@ public class ModelFitter
                 continue;
             }
 
-            // 自然な境界（ψ = 0 で指数型、η = 1 で完全除去）は注意しない
-            if (bound == 0 || (name.StartsWith("η") && bound == 1.0)) continue;
+            // 自然な境界（ln ψ の下限で指数型、η = 1 で完全除去など）は注意しない
+            if (model.IsNaturalBound(i, atUpper, bound)) continue;
 
             result.Warnings.Add(
                 $"パラメータ {name} が探索範囲の{(atUpper ? "上限" : "下限")}（{bound:G4}）に張り付いています。推定値の解釈に注意してください。");

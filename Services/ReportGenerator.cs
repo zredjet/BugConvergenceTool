@@ -174,6 +174,10 @@ public class ReportGenerator
         {
             sb.AppendLine($"    {ParameterDescriptions.FormatLine(name, value)}");
         }
+        foreach (var line in ParameterDescriptions.DerivedLines(bestResult.Model, bestResult.ParameterVector))
+        {
+            sb.AppendLine($"    {line}");
+        }
         sb.AppendLine();
         sb.AppendLine("  適合度指標:");
         sb.AppendLine($"    決定係数 (R²):       {bestResult.R2:F4}");

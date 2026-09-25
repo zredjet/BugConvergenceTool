@@ -1,3 +1,5 @@
+using BugConvergenceTool.Models;
+
 namespace BugConvergenceTool.Services;
 
 /// <summary>
@@ -13,7 +15,7 @@ public static class ParameterDescriptions
         "a" => "（潜在バグ総数の規模。TEF 組込モデル以外は m(∞) = a）",
         "b" => "（バグ発見率）",
         "c" => "（形状パラメータ）",
-        "ψ" => "（変曲パラメータ。0 で指数型、大きいほど立ち上がりが遅い S 字）",
+        "lnψ" => "（変曲パラメータ ψ の対数。下限 -10 で実質的に指数型、大きいほど立ち上がりが遅い S 字）",
         "τ" => "（変化点）",
         "b₁" or "b1" => "（変化点前の発見率）",
         "b₂" or "b2" => "（変化点後の発見率）",
@@ -31,6 +33,16 @@ public static class ParameterDescriptions
     /// 百分率でも表示するパラメータか（0〜1 の比率）
     /// </summary>
     public static bool IsRatio(string name) => name.StartsWith("η");
+
+    /// <summary>
+    /// パラメータから導かれる量（変曲点など）の「名前 = 値 （説明）」形式の行
+    /// </summary>
+    public static IEnumerable<string> DerivedLines(ReliabilityGrowthModelBase? model, double[] parameters)
+    {
+        if (model == null || parameters.Length != model.ParameterNames.Length) yield break;
+        foreach (var (name, value, description) in model.GetDerivedQuantities(parameters))
+            yield return $"{name} = {value:F2} {description}";
+    }
 
     /// <summary>
     /// 「名前 = 値 （説明）」形式の1行

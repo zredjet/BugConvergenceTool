@@ -101,7 +101,8 @@ public class ExponentialChangePointModel : ChangePointModelBase
 /// </summary>
 /// <remarks>
 /// 遅延S字型の欠陥検出率（ハザード）h(t) = b²t/(1+bt) の b が τ で b₁ から b₂ に変わるとして導いた式。
-/// τ で m(t) と検出強度が連続になる（以前の実装は変化点直後に検出強度が 0 に落ちていた）。
+/// τ で m(t) は連続だが、検出強度は a·S(τ)·h₁(τ) から a·S(τ)·h₂(τ) へ跳ぶ（b₁ = b₂ のときだけ連続）。
+/// 変化点としてはこれが正しい挙動である（以前の実装は変化点直後に検出強度が 0 に落ちていた）。
 /// </remarks>
 public class DelayedSChangePointModel : ChangePointModelBase
 {
@@ -154,7 +155,7 @@ public class DelayedSChangePointModel : ChangePointModelBase
 
 /// <summary>
 /// 変曲S字型 + 変化点モデル
-/// m(t) = a(1 - e^(-u(t))) / (1 + ψ·e^(-u(t)))
+/// m(t) = a(1 - e^(-u(t))) / (1 + ψ·e^(-u(t)))、ψ = e^(lnψ)
 /// </summary>
 /// <remarks>
 /// Ohba (1984) の変曲S字型に実効時間方式の変化点を導入したもの。m(∞) = a。
@@ -166,15 +167,15 @@ public class InflectionSChangePointModel : ChangePointModelBase
     public override ReliabilityGrowthModelBase CreateNullModel() => new InflectionSModel();
     
     public override string Name => "変曲S字型+変化点";
-    public override string Formula => "m(t) = a(1-e^(-u(t)))/(1+ψ·e^(-u(t))), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]";
+    public override string Formula => "m(t) = a(1-e^(-u(t)))/(1+ψ·e^(-u(t))), ψ=e^(lnψ), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]";
     public override string Description => "変曲S字型（Ohba）の検出率が変化点 τ で b₁ から b₂ に変わる";
-    public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "ψ", "τ" };
+    public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "lnψ", "τ" };
 
     public override double Calculate(double t, double[] p)
     {
-        double a = p[0], b1 = p[1], b2 = p[2], psi = p[3], tau = p[4];
-        double expU = Math.Exp(-EffectiveTime(t, b1, b2, tau));
-        return a * (1 - expU) / (1 + psi * expU);
+        double a = p[0], b1 = p[1], b2 = p[2], logPsi = p[3], tau = p[4];
+        double u = EffectiveTime(t, b1, b2, tau);
+        return a * (1 - Math.Exp(-u)) / (1 + Math.Exp(logPsi - u));
     }
 
     public override double[] GetInitialParameters(double[] tData, double[] yData)
@@ -189,7 +190,7 @@ public class InflectionSChangePointModel : ChangePointModelBase
 
         double b0 = GetBValueExponential(EstimateAverageSlope(yData));
 
-        return new[] { a0, b0, b0, 1.0, InitialChangePoint(yData) };
+        return new[] { a0, b0, b0, 0.0, InitialChangePoint(yData) };
     }
 
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -198,10 +199,20 @@ public class InflectionSChangePointModel : ChangePointModelBase
         int n = tData.Length;
 
         return (
-            new[] { maxY, 0.001, 0.001, 0.0, 2.0 },
-            new[] { maxY * 5, 1.0, 1.0, 1000.0, n - 2.0 }
+            new[] { maxY, 0.001, 0.001, InflectionSModel.LogPsiLower, 2.0 },
+            new[] { maxY * 5, 1.0, 1.0, InflectionSModel.LogPsiUpper, n - 2.0 }
         );
     }
+
+    public override bool IsNaturalBound(int index, bool upper, double bound)
+        => (index == 3 && !upper) || base.IsNaturalBound(index, upper, bound);
+
+    // 変曲点は変化点前の発見率 b₁ で見た t* = ln ψ / b₁
+    public override IEnumerable<(string Name, double Value, string Description)> GetDerivedQuantities(double[] parameters)
+        => InflectionSModel.InflectionPoint(parameters[1], parameters[3]);
+
+    public override double[] ToFisherScale(double[] parameters) => InflectionSModel.LogToLinear(parameters, 3);
+    public override double[] FromFisherScale(double[] fisherParameters) => InflectionSModel.LinearToLog(fisherParameters, 3);
 }
 
 /// <summary>
@@ -364,6 +375,18 @@ public sealed class FixedTauChangePointModel : ReliabilityGrowthModelBase
         var (lower, upper) = _baseModel.GetBounds(tData, yData);
         return (lower[..^1], upper[..^1]);
     }
+    
+    public override bool IsNaturalBound(int index, bool upper, double bound)
+        => _baseModel.IsNaturalBound(index, upper, bound);
+    
+    public override IEnumerable<(string Name, double Value, string Description)> GetDerivedQuantities(double[] parameters)
+        => _baseModel.GetDerivedQuantities(ToFullParameters(parameters));
+    
+    public override double[] ToFisherScale(double[] parameters)
+        => _baseModel.ToFisherScale(ToFullParameters(parameters))[..^1];
+    
+    public override double[] FromFisherScale(double[] fisherParameters)
+        => _baseModel.FromFisherScale([.. fisherParameters, FixedTau])[..^1];
 }
 
 

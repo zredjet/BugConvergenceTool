@@ -125,6 +125,8 @@ public class ExcelWriter
             .Where(p => !shown.Contains(p.Key))
             .Select(p => $"{p.Key}={p.Value:G4}")
             .ToList();
+        if (result.Model != null && result.ParameterVector.Length == result.Model.ParameterNames.Length)
+            others.AddRange(result.Model.GetDerivedQuantities(result.ParameterVector).Select(d => $"{d.Name}={d.Value:G4}"));
         return others.Count > 0 ? string.Join(", ", others) : "-";
     }
     

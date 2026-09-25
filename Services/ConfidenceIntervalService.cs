@@ -216,9 +216,13 @@ public class FisherInformationService
         
         try
         {
+            // Fisher 情報行列はモデルが指定する座標 q で求める（ln ψ のように平らになりやすい座標を避ける）
+            var q0 = model.ToFisherScale(parameters);
+            
             // 負の対数尤度関数（Poisson-NHPP）
-            Func<double[], double> negLogLik = p =>
+            Func<double[], double> negLogLik = q =>
             {
+                var p = model.FromFisherScale(q);
                 double logL = 0;
                 double prevM = 0;
                 
@@ -236,20 +240,23 @@ public class FisherInformationService
                 return -logL; // 負の対数尤度を返す
             };
             
-            // 観測Fisher情報行列（負の対数尤度のヘッセ行列）
-            var observedFisher = CalculateHessian(negLogLik, parameters);
+            // 観測Fisher情報行列（負の対数尤度のヘッセ行列、座標 q）
+            var observedFisher = CalculateHessian(negLogLik, q0);
             result.ObservedFisherMatrix = observedFisher;
             
             // 逆行列 = 分散共分散行列
-            var covMatrix = InvertMatrix(observedFisher);
+            var covQ = InvertMatrix(observedFisher);
             
-            if (covMatrix == null)
+            if (covQ == null)
             {
                 result.Success = false;
                 result.ErrorMessage = "Fisher情報行列が特異または条件数が大きすぎます";
                 result.StandardErrors = Enumerable.Repeat(double.NaN, k).ToArray();
                 return result;
             }
+            
+            // 推定に使う座標 θ の共分散に戻す: Cov_θ = J Cov_q Jᵀ（J = ∂θ/∂q）
+            var covMatrix = TransformCovariance(covQ, model.FromFisherScale, q0);
             
             result.CovarianceMatrix = covMatrix;
             
@@ -468,6 +475,45 @@ public class FisherInformationService
         }
         
         return grad;
+    }
+    
+    /// <summary>
+    /// 座標 q の共分散を θ = f(q) の共分散に変換する（数値ヤコビアン。恒等変換ならそのまま）
+    /// </summary>
+    private double[,] TransformCovariance(double[,] covQ, Func<double[], double[]> f, double[] q0)
+    {
+        int k = q0.Length;
+        var theta0 = f(q0);
+        var jacobian = new double[k, k];
+        bool identity = true;
+        for (int j = 0; j < k; j++)
+        {
+            double step = Math.Max(_h, Math.Abs(q0[j]) * _h);
+            // 下側が 0 以下になる座標（ψ など）は前進差分にする
+            double lowerStep = q0[j] - step > 0 || q0[j] <= 0 ? step : 0;
+            var qp = (double[])q0.Clone(); qp[j] += step;
+            var qm = (double[])q0.Clone(); qm[j] -= lowerStep;
+            var tp = f(qp);
+            var tm = lowerStep > 0 ? f(qm) : theta0;
+            for (int i = 0; i < k; i++)
+            {
+                jacobian[i, j] = (tp[i] - tm[i]) / (step + lowerStep);
+                if (Math.Abs(jacobian[i, j] - (i == j ? 1.0 : 0.0)) > 1e-6) identity = false;
+            }
+        }
+        if (identity) return covQ;
+        
+        var cov = new double[k, k];
+        for (int a = 0; a < k; a++)
+            for (int b = 0; b < k; b++)
+            {
+                double sum = 0;
+                for (int i = 0; i < k; i++)
+                    for (int j = 0; j < k; j++)
+                        sum += jacobian[a, i] * covQ[i, j] * jacobian[b, j];
+                cov[a, b] = sum;
+            }
+        return cov;
     }
     
     /// <summary>

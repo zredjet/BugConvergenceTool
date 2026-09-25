@@ -236,6 +236,43 @@ public abstract class ReliabilityGrowthModelBase
         return parameters[0];
     }
 
+    /// <summary>
+    /// パラメータ index の境界 bound が、別のモデルに一致するなどの「自然な境界」か
+    /// </summary>
+    /// <remarks>
+    /// 自然な境界に張り付いた推定値は、データがそのモデルを支持しているだけなので注意しない。
+    /// 既定は 0 の境界（変化の大きさが 0 など）と、欠陥除去効率 η の上限 1（完全除去）。
+    /// </remarks>
+    /// <param name="index">パラメータの位置</param>
+    /// <param name="upper">上限なら true、下限なら false</param>
+    /// <param name="bound">境界の値</param>
+    public virtual bool IsNaturalBound(int index, bool upper, double bound)
+    {
+        string name = index < ParameterNames.Length ? ParameterNames[index] : "";
+        return bound == 0 || (upper && name.StartsWith("η") && bound == 1.0);
+    }
+
+    /// <summary>
+    /// Fisher 情報行列を計算する座標に変換する（既定は恒等変換）
+    /// </summary>
+    /// <remarks>
+    /// 探索しやすさのために対数などで持っているパラメータは、自然な境界の近くで尤度がほとんど平らになり
+    /// （例: ln ψ → -∞ で ψ → 0）、その座標のヘッセ行列は特異に近くなる。その場合は元の座標
+    /// （ψ）で Fisher 情報行列を求め、ヤコビアンで推定に使う座標の共分散に戻す。
+    /// </remarks>
+    public virtual double[] ToFisherScale(double[] parameters) => (double[])parameters.Clone();
+
+    /// <summary>
+    /// <see cref="ToFisherScale"/> の逆変換
+    /// </summary>
+    public virtual double[] FromFisherScale(double[] fisherParameters) => (double[])fisherParameters.Clone();
+
+    /// <summary>
+    /// パラメータから導かれる、解釈しやすい量（変曲点など）
+    /// </summary>
+    public virtual IEnumerable<(string Name, double Value, string Description)> GetDerivedQuantities(double[] parameters)
+        => Enumerable.Empty<(string, double, string)>();
+
     #region 共通ヘルパ（初期値推定用）
 
     /// <summary>

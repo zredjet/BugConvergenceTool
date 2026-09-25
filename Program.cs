@@ -740,6 +740,10 @@ class Program
         {
             Console.WriteLine($"  {ParameterDescriptions.FormatLine(name, value)}");
         }
+        foreach (var line in ParameterDescriptions.DerivedLines(bestResult.Model, bestResult.ParameterVector))
+        {
+            Console.WriteLine($"  {line}");
+        }
         
         Console.WriteLine("\n適合度指標:");
         Console.WriteLine($"  決定係数 (R²):       {bestResult.R2:F4}");
