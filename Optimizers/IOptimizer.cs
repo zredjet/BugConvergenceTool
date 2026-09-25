@@ -80,6 +80,39 @@ public class OptimizationResult
     /// </summary>
     public long ElapsedMilliseconds { get; set; }
     
+    /// <summary>
+    /// 収束判定を満たして終了したか（false なら最大反復回数で打ち切り）
+    /// </summary>
+    public bool Converged { get; set; }
+    
+    /// <summary>
+    /// 有効な目的関数値か（評価がすべて失敗した場合の double.MaxValue や NaN・∞ は無効）
+    /// </summary>
+    /// <remarks>
+    /// 各最適化器は評価に失敗した点を double.MaxValue として扱うため、「有限値か」だけで成功と判定すると
+    /// すべての評価が失敗しても成功になってしまう。
+    /// </remarks>
+    public static bool IsValidObjective(double value) => double.IsFinite(value) && value < double.MaxValue;
+    
+    #region マルチスタート情報
+    
+    /// <summary>
+    /// マルチスタートで試した開始点数（マルチスタートでなければ 1）
+    /// </summary>
+    public int StartsAttempted { get; set; } = 1;
+    
+    /// <summary>
+    /// マルチスタートで最適化に成功した開始点数
+    /// </summary>
+    public int StartsSucceeded { get; set; } = 1;
+    
+    /// <summary>
+    /// 最良解と同じ目的関数値に到達した開始点数
+    /// </summary>
+    public int StartsConvergedToBest { get; set; } = 1;
+    
+    #endregion
+    
     #region 収束診断情報
     
     /// <summary>

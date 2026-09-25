@@ -160,14 +160,26 @@ public class DEOptimizer : IOptimizer
                 
                 result.ConvergenceHistory.Add(bestFitness);
                 
-                // 収束判定（相対収束）
+                // 収束判定1: 個体群全体の目的関数値のばらつきが十分小さい（全個体が最良解の近くに集まった）
+                // 最良値の停滞だけで判定すると、個体群が収束した後も 50 世代回り続けて遅い
+                if (PopulationConverged(fitness, bestFitness))
+                {
+                    result.Converged = true;
+                    result.Iterations = iter + 1;
+                    break;
+                }
+                
+                // 収束判定2: 最良値の相対変化が小さい状態が続く
                 double relativeChange = Math.Abs(previousBest - bestFitness) / 
                                         (Math.Abs(previousBest) + 1e-10);
                 if (relativeChange < _tolerance)
                 {
                     stagnationCount++;
                     if (stagnationCount > 50)
+                    {
+                        result.Converged = true;
                         break;
+                    }
                 }
                 else
                 {
@@ -181,7 +193,7 @@ public class DEOptimizer : IOptimizer
             result.Parameters = (double[])population[bestIndex].Clone();
             result.ObjectiveValue = bestFitness;
             result.FunctionEvaluations = evaluations;
-            result.Success = !double.IsNaN(bestFitness) && !double.IsInfinity(bestFitness);
+            result.Success = OptimizationResult.IsValidObjective(bestFitness);
         }
         catch (Exception ex)
         {
@@ -193,6 +205,24 @@ public class DEOptimizer : IOptimizer
         result.ElapsedMilliseconds = stopwatch.ElapsedMilliseconds;
         
         return result;
+    }
+    
+    /// <summary>
+    /// 個体群の目的関数値の範囲（最大 - 最小）が、最良値に対して十分小さいか
+    /// </summary>
+    /// <remarks>
+    /// 範囲が 1e-8 × (1 + |最良値|) 以下なら収束とみなす。負の対数尤度（数十〜数百）では 1e-6 程度の差で、
+    /// 推定値・AIC への影響は無視できる。
+    /// </remarks>
+    private static bool PopulationConverged(double[] fitness, double bestFitness)
+    {
+        double worst = double.MinValue;
+        foreach (double f in fitness)
+        {
+            if (!OptimizationResult.IsValidObjective(f)) return false;
+            if (f > worst) worst = f;
+        }
+        return worst - bestFitness <= 1e-8 * (1 + Math.Abs(bestFitness));
     }
     
     private static double SafeEvaluate(Func<double[], double> f, double[] x)

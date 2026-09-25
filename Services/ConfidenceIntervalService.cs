@@ -1,480 +1,110 @@
 using BugConvergenceTool.Models;
-using BugConvergenceTool.Optimizers;
 
 namespace BugConvergenceTool.Services;
 
 /// <summary>
-/// ブートストラップの擬似データ生成方法
+/// ブートストラップによる平均値関数 m(t) の信頼区間（帯）と、総数・収束日の信頼区間
 /// </summary>
-public enum BootstrapMethod
+public sealed class ConfidenceBandResult
 {
-    /// <summary>
-    /// 残差リサンプリング（従来の方法）
-    /// 残差を無作為に再抽出して擬似データを生成
-    /// </summary>
-    ResidualResampling,
+    public double ConfidenceLevel { get; init; }
     
-    /// <summary>
-    /// パラメトリック・ブートストラップ（Poisson再生成）
-    /// NHPP仮定に基づき、日次バグ数をPoisson分布から再生成
-    /// 学術的により正確だが、Poisson仮定が満たされない場合は注意
-    /// </summary>
-    ParametricPoisson
+    /// <summary>要求したブートストラップ反復回数</summary>
+    public int Requested { get; init; }
+    
+    /// <summary>再推定に成功した反復回数（区間の計算に使った数）</summary>
+    public int Succeeded { get; init; }
+    
+    /// <summary>時刻（観測期間と将来の期間）</summary>
+    public double[] Times { get; init; } = Array.Empty<double>();
+    
+    /// <summary>推定値での m(t)</summary>
+    public double[] Estimate { get; init; } = Array.Empty<double>();
+    
+    /// <summary>m(t) の信頼区間の下限</summary>
+    public double[] Lower { get; init; } = Array.Empty<double>();
+    
+    /// <summary>m(t) の信頼区間の上限</summary>
+    public double[] Upper { get; init; } = Array.Empty<double>();
+    
+    /// <summary>推定潜在バグ総数 m(∞) の信頼区間</summary>
+    public IntervalEstimate? TotalBugs { get; init; }
+    
+    /// <summary>収束マイルストーン到達日の信頼区間</summary>
+    public List<MilestoneInterval> Milestones { get; init; } = new();
+    
+    public List<string> Warnings { get; init; } = new();
 }
 
 /// <summary>
-/// 信頼区間計算サービス
-/// パラメトリック・ブートストラップ法により信頼区間を計算する
+/// パラメトリック・ブートストラップによる信頼区間（--ci）
 /// </summary>
 /// <remarks>
-/// 前提条件：
-/// - ReliabilityGrowthModelBase.Calculate は純粋関数（内部状態を持たない）であること
-/// - FittingResult.ParameterVector と PredictionTimes が事前にセットされていること
-/// 
-/// 設計方針：
-/// - ブートストラップ用には軽量 Nelder-Mead を使用（初期値は元の最適解θ*）
-/// - 擬似データはθ*からのわずかな揺らぎなので、真の最適解は大きく離れない前提
-/// - 収束失敗やSSEが極端に悪い解は破棄してフォールバック
-/// 
-/// サポートするブートストラップ方法：
-/// 1. 残差リサンプリング: 従来の方法。正規性仮定
-/// 2. パラメトリック（Poisson）: NHPP仮定に基づく。日次バグ数をPoisson分布から再生成
+/// <para>
+/// <see cref="ParametricBootstrap"/> で得た θ* の分布から、m(t)（観測期間と将来の期間）、m(∞)、
+/// 収束マイルストーン到達日の信頼区間をパーセンタイル法で求める。パラメータの不確実性のみを含み、
+/// Poisson 変動を含む将来の観測値の区間は <see cref="PredictionIntervalService"/>（--pi）で求める。
+/// </para>
+/// <para>
+/// 以前の実装は、MLE で推定したモデルでも再推定を SSE で行い、失敗した反復を θ̂ で置き換え
+/// （区間が不当に狭くなる）、区間を観測期間内の m(t) にしか付けていなかった。
+/// また累積値の残差を入れ替える「残差リサンプリング」は、累積値が減少・非整数になり
+/// Poisson 尤度と両立しないため廃止した。
+/// </para>
 /// </remarks>
 public class ConfidenceIntervalService
 {
-    private readonly IOptimizer _bootstrapOptimizer;
-    private readonly BootstrapSettings _settings;
-    private readonly bool _verbose;
-    private readonly BootstrapMethod _method;
-
-    // 並列環境でシードが衝突しない RNG
-    private static readonly ThreadLocal<Random> _threadLocalRandom =
-        new ThreadLocal<Random>(() => new Random(Guid.NewGuid().GetHashCode()));
-
-    /// <summary>
-    /// コンストラクタ（設定クラスを使用）
-    /// </summary>
-    /// <param name="settings">ブートストラップ設定</param>
-    /// <param name="verbose">詳細出力するかどうか</param>
-    /// <param name="method">ブートストラップ方法（デフォルト: パラメトリックPoisson）</param>
-    public ConfidenceIntervalService(
-        BootstrapSettings settings, 
-        bool verbose = false,
-        BootstrapMethod method = BootstrapMethod.ParametricPoisson)
+    public ConfidenceBandResult Calculate(
+        ReliabilityGrowthModelBase model,
+        double[] estimate,
+        ParametricBootstrapResult bootstrap,
+        double[] times,
+        double confidenceLevel = 0.95)
     {
-        _settings = settings;
-        _verbose = verbose;
-        _method = method;
-        
-        // 設定に基づいてブートストラップ用オプティマイザを作成
-        _bootstrapOptimizer = CreateBootstrapOptimizer(
-            _settings.OptimizerMaxIterations,
-            _settings.OptimizerTolerance
-        );
-    }
-
-    /// <summary>
-    /// コンストラクタ（後方互換性のため維持）
-    /// </summary>
-    /// <param name="bootstrapOptimizer">ブートストラップ用の軽量オプティマイザ</param>
-    /// <param name="bootstrapIterations">ブートストラップ反復回数（デフォルト: 200）</param>
-    /// <param name="verbose">詳細出力するかどうか</param>
-    public ConfidenceIntervalService(
-        IOptimizer bootstrapOptimizer,
-        int bootstrapIterations = 200,
-        bool verbose = false)
-    {
-        _bootstrapOptimizer = bootstrapOptimizer;
-        _settings = new BootstrapSettings
+        var replicates = bootstrap.Replicates;
+        var warnings = new List<string>();
+        if (replicates.Count == 0)
         {
-            Iterations = bootstrapIterations
+            return new ConfidenceBandResult
+            {
+                ConfidenceLevel = confidenceLevel,
+                Requested = bootstrap.Requested,
+                Warnings = { "ブートストラップの再推定がすべて失敗したため、信頼区間を計算できません。" }
+            };
+        }
+        if (bootstrap.SuccessRate < 0.8)
+        {
+            warnings.Add($"ブートストラップの再推定の成功が {bootstrap.Succeeded}/{bootstrap.Requested} 回と少なく、区間の精度が低い可能性があります。");
+        }
+        
+        double qLow = (1 - confidenceLevel) / 2, qHigh = 1 - qLow;
+        var lower = new double[times.Length];
+        var upper = new double[times.Length];
+        for (int i = 0; i < times.Length; i++)
+        {
+            var sorted = replicates.Select(p => model.Calculate(times[i], p)).Where(double.IsFinite).OrderBy(v => v).ToList();
+            lower[i] = ParametricBootstrap.Percentile(sorted, qLow);
+            upper[i] = ParametricBootstrap.Percentile(sorted, qHigh);
+        }
+        
+        var totals = replicates.Select(model.GetAsymptoticTotalBugs).Where(double.IsFinite).OrderBy(v => v).ToList();
+        
+        return new ConfidenceBandResult
+        {
+            ConfidenceLevel = confidenceLevel,
+            Requested = bootstrap.Requested,
+            Succeeded = replicates.Count,
+            Times = times,
+            Estimate = times.Select(t => model.Calculate(t, estimate)).ToArray(),
+            Lower = lower,
+            Upper = upper,
+            TotalBugs = new IntervalEstimate(model.GetAsymptoticTotalBugs(estimate),
+                ParametricBootstrap.Percentile(totals, qLow), ParametricBootstrap.Percentile(totals, qHigh)),
+            Milestones = PredictionIntervalService.MilestoneRatios
+                .Select(ratio => PredictionIntervalService.CalculateMilestone(model, estimate, replicates, ratio, qLow, qHigh))
+                .ToList(),
+            Warnings = warnings
         };
-        _verbose = verbose;
-        _method = BootstrapMethod.ParametricPoisson; // デフォルトで新方式
-    }
-
-    /// <summary>
-    /// 信頼区間を計算し、FittingResult に設定する
-    /// </summary>
-    /// <param name="model">信頼度成長モデル</param>
-    /// <param name="tData">時刻データ（観測データ）</param>
-    /// <param name="yData">累積バグ数データ（観測データ）</param>
-    /// <param name="result">フィッティング結果（ParameterVector と PredictionTimes がセット済みであること）</param>
-    /// <exception cref="InvalidOperationException">ParameterVector または PredictionTimes が不正な場合</exception>
-    public void CalculateIntervals(
-        ReliabilityGrowthModelBase model,
-        double[] tData,
-        double[] yData,
-        FittingResult result)
-    {
-        if (_method == BootstrapMethod.ParametricPoisson)
-        {
-            CalculateIntervalsParametricPoisson(model, tData, yData, result);
-        }
-        else
-        {
-            CalculateIntervalsResidualResampling(model, tData, yData, result);
-        }
-    }
-    
-    /// <summary>
-    /// パラメトリック・ブートストラップ（Poisson再生成）による信頼区間計算
-    /// </summary>
-    /// <remarks>
-    /// NHPP（非斉次ポアソン過程）仮定に基づき、以下の手順で擬似データを生成：
-    /// 1. 元の推定パラメータθ*からモデルの累積平均関数m(t;θ*)を計算
-    /// 2. 日次期待バグ数λ_i = m(t_i) - m(t_{i-1})を計算
-    /// 3. 日次バグ数をPoisson(λ_i)から再生成
-    /// 4. 累積化して擬似データを作成
-    /// 5. 擬似データに対してパラメータを再推定
-    /// </remarks>
-    private void CalculateIntervalsParametricPoisson(
-        ReliabilityGrowthModelBase model,
-        double[] tData,
-        double[] yData,
-        FittingResult result)
-    {
-        int n = tData.Length;
-        int predictionLength = result.PredictedValues.Length;
-
-        // 前提条件のチェック
-        if (result.ParameterVector == null || result.ParameterVector.Length == 0)
-            throw new InvalidOperationException("ParameterVector が設定されていません。");
-
-        if (result.PredictionTimes == null || result.PredictionTimes.Length != predictionLength)
-            throw new InvalidOperationException("PredictionTimes が不正です。");
-
-        var originalParams = (double[])result.ParameterVector.Clone();
-
-        // 元のフィットのSSEを計算（フィルタリング用）
-        double originalSSE = model.CalculateSSE(tData, yData, originalParams);
-        double sseThreshold = _settings.SSEThresholdMultiplier > 0 
-            ? originalSSE * _settings.SSEThresholdMultiplier 
-            : double.MaxValue;
-
-        // 1. 日次期待バグ数λ_iを計算
-        var dailyExpected = new double[n];
-        dailyExpected[0] = model.Calculate(tData[0], originalParams);
-        for (int i = 1; i < n; i++)
-        {
-            double prevM = model.Calculate(tData[i - 1], originalParams);
-            double currM = model.Calculate(tData[i], originalParams);
-            dailyExpected[i] = Math.Max(0, currM - prevM);
-        }
-
-        // 2. ブートストラップ予測値の格納領域 [t][iter]
-        var bootstrapPredictions = new double[predictionLength][];
-        for (int i = 0; i < predictionLength; i++)
-            bootstrapPredictions[i] = new double[_settings.Iterations];
-
-        // 3. 統計カウント用（スレッドセーフ）
-        int successCount = 0;
-        int fallbackCount = 0;
-        int sseFilteredCount = 0;
-
-        // 4. Parallel.For でブートストラップ実行
-        Parallel.For(0, _settings.Iterations, iter =>
-        {
-            var random = _threadLocalRandom.Value!;
-            
-            // 4-1. 日次バグ数をPoisson分布から再生成
-            var syntheticDaily = new double[n];
-            for (int i = 0; i < n; i++)
-            {
-                double lambda = dailyExpected[i];
-                if (lambda > 0)
-                {
-                    syntheticDaily[i] = SamplePoisson(random, lambda);
-                }
-                else
-                {
-                    syntheticDaily[i] = 0;
-                }
-            }
-            
-            // 4-2. 累積化
-            var syntheticY = new double[n];
-            syntheticY[0] = syntheticDaily[0];
-            for (int i = 1; i < n; i++)
-            {
-                syntheticY[i] = syntheticY[i - 1] + syntheticDaily[i];
-            }
-
-            double[] useParams = originalParams; // デフォルトはフォールバック
-
-            try
-            {
-                // 4-3. Bounds を再計算（擬似データに合わせて）
-                var (lower, upper) = model.GetBounds(tData, syntheticY);
-
-                // 4-4. ブートストラップ用最適化（初期値に θ* を使用）
-                var optResult = _bootstrapOptimizer.Optimize(
-                    p => model.CalculateSSE(tData, syntheticY, p),
-                    lower, upper,
-                    initialGuess: originalParams
-                );
-
-                if (optResult.Success)
-                {
-                    // 4-5. SSE フィルタリング（極端に悪い解は破棄）
-                    double newSSE = model.CalculateSSE(tData, syntheticY, optResult.Parameters);
-                    
-                    if (newSSE <= sseThreshold)
-                    {
-                        useParams = optResult.Parameters;
-                        Interlocked.Increment(ref successCount);
-                    }
-                    else
-                    {
-                        // SSE が悪すぎる場合はフォールバック
-                        Interlocked.Increment(ref sseFilteredCount);
-                        Interlocked.Increment(ref fallbackCount);
-                    }
-                }
-                else
-                {
-                    Interlocked.Increment(ref fallbackCount);
-                }
-            }
-            catch
-            {
-                // 例外発生時もフォールバック
-                Interlocked.Increment(ref fallbackCount);
-            }
-
-            // 4-6. 予測曲線を計算（PredictionTimes ベース）
-            for (int t = 0; t < predictionLength; t++)
-            {
-                double timePoint = result.PredictionTimes[t];
-                bootstrapPredictions[t][iter] = model.Calculate(timePoint, useParams);
-            }
-        });
-
-        if (_verbose)
-        {
-            Console.WriteLine($"    パラメトリック(Poisson)ブートストラップ: 成功={successCount}, フォールバック={fallbackCount}" +
-                (sseFilteredCount > 0 ? $" (SSEフィルタ={sseFilteredCount})" : ""));
-        }
-
-        // 5. パーセンタイル法で信頼区間を計算
-        ComputeConfidenceIntervalFromSamples(bootstrapPredictions, predictionLength, result);
-    }
-
-    /// <summary>
-    /// 残差リサンプリングによる信頼区間計算（従来の方法）
-    /// </summary>
-    private void CalculateIntervalsResidualResampling(
-        ReliabilityGrowthModelBase model,
-        double[] tData,
-        double[] yData,
-        FittingResult result)
-    {
-        int n = tData.Length;
-        int predictionLength = result.PredictedValues.Length;
-
-        // 前提条件のチェック
-        if (result.ParameterVector == null || result.ParameterVector.Length == 0)
-            throw new InvalidOperationException("ParameterVector が設定されていません。");
-
-        if (result.PredictionTimes == null || result.PredictionTimes.Length != predictionLength)
-            throw new InvalidOperationException("PredictionTimes が不正です。");
-
-        var originalParams = (double[])result.ParameterVector.Clone();
-
-        // 元のフィットのSSEを計算（フィルタリング用）
-        double originalSSE = model.CalculateSSE(tData, yData, originalParams);
-        double sseThreshold = _settings.SSEThresholdMultiplier > 0 
-            ? originalSSE * _settings.SSEThresholdMultiplier 
-            : double.MaxValue;
-
-        // 1. 残差 e_i = y_i - m(t_i; θ*) を計算
-        var residuals = new double[n];
-        for (int i = 0; i < n; i++)
-        {
-            residuals[i] = yData[i] - model.Calculate(tData[i], originalParams);
-        }
-
-        // 2. ブートストラップ予測値の格納領域 [t][iter]
-        var bootstrapPredictions = new double[predictionLength][];
-        for (int i = 0; i < predictionLength; i++)
-            bootstrapPredictions[i] = new double[_settings.Iterations];
-
-        // 3. 統計カウント用（スレッドセーフ）
-        int successCount = 0;
-        int fallbackCount = 0;
-        int sseFilteredCount = 0;
-
-        // 4. Parallel.For でブートストラップ実行
-        Parallel.For(0, _settings.Iterations, iter =>
-        {
-            var random = _threadLocalRandom.Value!;
-            var syntheticY = new double[n];
-
-            // 4-1. 擬似データの生成（残差リサンプリング）
-            for (int i = 0; i < n; i++)
-            {
-                double pred = model.Calculate(tData[i], originalParams);
-                double randomResidual = residuals[random.Next(n)];
-                double y = pred + randomResidual;
-                if (y < 0) y = 0; // 累積バグ数は非負
-                syntheticY[i] = y;
-            }
-
-            double[] useParams = originalParams; // デフォルトはフォールバック
-
-            try
-            {
-                // 4-2. Bounds を再計算（擬似データに合わせて）
-                var (lower, upper) = model.GetBounds(tData, syntheticY);
-
-                // 4-3. ブートストラップ用最適化（初期値に θ* を使用）
-                var optResult = _bootstrapOptimizer.Optimize(
-                    p => model.CalculateSSE(tData, syntheticY, p),
-                    lower, upper,
-                    initialGuess: originalParams
-                );
-
-                if (optResult.Success)
-                {
-                    // 4-4. SSE フィルタリング（極端に悪い解は破棄）
-                    double newSSE = model.CalculateSSE(tData, syntheticY, optResult.Parameters);
-                    
-                    if (newSSE <= sseThreshold)
-                    {
-                        useParams = optResult.Parameters;
-                        Interlocked.Increment(ref successCount);
-                    }
-                    else
-                    {
-                        // SSE が悪すぎる場合はフォールバック
-                        Interlocked.Increment(ref sseFilteredCount);
-                        Interlocked.Increment(ref fallbackCount);
-                    }
-                }
-                else
-                {
-                    Interlocked.Increment(ref fallbackCount);
-                }
-            }
-            catch
-            {
-                // 例外発生時もフォールバック
-                Interlocked.Increment(ref fallbackCount);
-            }
-
-            // 4-5. 予測曲線を計算（PredictionTimes ベース）
-            for (int t = 0; t < predictionLength; t++)
-            {
-                double timePoint = result.PredictionTimes[t];
-                bootstrapPredictions[t][iter] = model.Calculate(timePoint, useParams);
-            }
-        });
-
-        if (_verbose)
-        {
-            Console.WriteLine($"    残差リサンプリング・ブートストラップ: 成功={successCount}, フォールバック={fallbackCount}" +
-                (sseFilteredCount > 0 ? $" (SSEフィルタ={sseFilteredCount})" : ""));
-        }
-
-        // 5. パーセンタイル法で信頼区間を計算
-        ComputeConfidenceIntervalFromSamples(bootstrapPredictions, predictionLength, result);
-    }
-
-    /// <summary>
-    /// ブートストラップサンプルから信頼区間を計算
-    /// </summary>
-    private void ComputeConfidenceIntervalFromSamples(
-        double[][] bootstrapPredictions, 
-        int predictionLength, 
-        FittingResult result)
-    {
-        double alpha = 1.0 - _settings.ConfidenceLevel;
-        double lowerPercentile = alpha / 2.0;      // 例: 0.025 for 95%
-        double upperPercentile = 1.0 - alpha / 2.0; // 例: 0.975 for 95%
-
-        var lowerBounds = new double[predictionLength];
-        var upperBounds = new double[predictionLength];
-
-        for (int t = 0; t < predictionLength; t++)
-        {
-            var samples = bootstrapPredictions[t];
-            Array.Sort(samples);
-
-            int b = _settings.Iterations;
-            int idxLow = (int)Math.Round((b - 1) * lowerPercentile);
-            int idxHigh = (int)Math.Round((b - 1) * upperPercentile);
-
-            idxLow = Math.Clamp(idxLow, 0, b - 1);
-            idxHigh = Math.Clamp(idxHigh, 0, b - 1);
-
-            lowerBounds[t] = samples[idxLow];
-            upperBounds[t] = samples[idxHigh];
-        }
-
-        result.LowerConfidenceBounds = lowerBounds;
-        result.UpperConfidenceBounds = upperBounds;
-    }
-    
-    /// <summary>
-    /// Poisson分布からサンプリング
-    /// </summary>
-    /// <remarks>
-    /// λ ≤ 30: 逆変換法（Knuth法）
-    /// λ > 30: 正規近似（計算効率のため）
-    /// </remarks>
-    private static int SamplePoisson(Random random, double lambda)
-    {
-        if (lambda <= 0) return 0;
-        
-        if (lambda <= 30)
-        {
-            // Knuth法（逆変換法）
-            double L = Math.Exp(-lambda);
-            int k = 0;
-            double p = 1.0;
-            
-            do
-            {
-                k++;
-                p *= random.NextDouble();
-            } while (p > L);
-            
-            return k - 1;
-        }
-        else
-        {
-            // 正規近似（大きなλの場合）
-            double u1 = random.NextDouble();
-            double u2 = random.NextDouble();
-            double z = Math.Sqrt(-2 * Math.Log(u1)) * Math.Cos(2 * Math.PI * u2);
-            int result = (int)Math.Round(lambda + Math.Sqrt(lambda) * z);
-            return Math.Max(0, result);
-        }
-    }
-
-    /// <summary>
-    /// ブートストラップ用の軽量オプティマイザを作成する
-    /// </summary>
-    /// <param name="maxIterations">最大反復回数（デフォルト: 80）</param>
-    /// <param name="tolerance">収束判定閾値（デフォルト: 1e-6）</param>
-    /// <returns>軽量 Nelder-Mead オプティマイザ</returns>
-    public static IOptimizer CreateBootstrapOptimizer(int maxIterations = 80, double tolerance = 1e-6)
-    {
-        return new NelderMeadOptimizer(
-            maxIterations: maxIterations,
-            tolerance: tolerance
-        );
-    }
-    
-    /// <summary>
-    /// 設定からブートストラップサービスを作成するファクトリメソッド
-    /// </summary>
-    /// <param name="verbose">詳細出力するかどうか</param>
-    /// <returns>設定済みの ConfidenceIntervalService</returns>
-    public static ConfidenceIntervalService CreateFromConfig(bool verbose = false)
-    {
-        var settings = ConfigurationService.Current.Bootstrap;
-        return new ConfidenceIntervalService(settings, verbose);
     }
 }
 
@@ -678,6 +308,42 @@ public class FisherInformationService
     }
     
     /// <summary>
+    /// パラメータの関数 g(θ) の漸近信頼区間（デルタ法）
+    /// </summary>
+    /// <param name="g">パラメータの関数（例: 推定潜在バグ総数 m(∞)）</param>
+    /// <param name="parameters">推定値</param>
+    /// <param name="covariance">パラメータの分散共分散行列（Fisher 情報行列の逆行列）</param>
+    /// <param name="logScale">
+    /// true なら ln g の区間を求めて指数変換する（正の量で下限が負にならず、右に裾の長い分布に合う）
+    /// </param>
+    public DerivedQuantityInterval CalculateDerivedInterval(
+        Func<double[], double> g, double[] parameters, double[,] covariance, bool logScale = true)
+    {
+        double estimate = g(parameters);
+        Func<double[], double> h = logScale ? p => Math.Log(g(p)) : g;
+        var gradient = CalculateGradient(h, parameters);
+        
+        int k = parameters.Length;
+        double variance = 0;
+        for (int i = 0; i < k; i++)
+            for (int j = 0; j < k; j++)
+                variance += gradient[i] * covariance[i, j] * gradient[j];
+        
+        if (!(variance >= 0) || !double.IsFinite(variance) || (logScale && !(estimate > 0)))
+        {
+            return new DerivedQuantityInterval(estimate, double.NaN, double.NaN, double.NaN, _confidenceLevel, logScale);
+        }
+        
+        double se = Math.Sqrt(variance);
+        double z = MathNet.Numerics.Distributions.Normal.InvCDF(0, 1, 1 - (1 - _confidenceLevel) / 2);
+        double center = h(parameters);
+        double lower = center - z * se, upper = center + z * se;
+        return logScale
+            ? new DerivedQuantityInterval(estimate, se * estimate, Math.Exp(lower), Math.Exp(upper), _confidenceLevel, true)
+            : new DerivedQuantityInterval(estimate, se, lower, upper, _confidenceLevel, false);
+    }
+
+    /// <summary>
     /// パラメータの信頼区間を計算
     /// </summary>
     public (double[] lower, double[] upper) CalculateParameterConfidenceIntervals(
@@ -860,6 +526,21 @@ public class FisherInformationService
             return null;
         }
     }
+}
+
+/// <summary>
+/// デルタ法による派生量の信頼区間
+/// </summary>
+/// <param name="Estimate">推定値 g(θ̂)</param>
+/// <param name="StandardError">標準誤差（対数スケールの場合は g(θ̂)·SE[ln g] で近似）</param>
+/// <param name="Lower">下限</param>
+/// <param name="Upper">上限</param>
+/// <param name="ConfidenceLevel">信頼水準</param>
+/// <param name="LogScale">対数スケールで計算したか</param>
+public sealed record DerivedQuantityInterval(
+    double Estimate, double StandardError, double Lower, double Upper, double ConfidenceLevel, bool LogScale)
+{
+    public bool IsValid => double.IsFinite(Lower) && double.IsFinite(Upper);
 }
 
 /// <summary>

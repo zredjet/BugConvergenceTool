@@ -22,6 +22,20 @@ public class ModelAveragingResult
     /// <summary>総バグ数の不確実性（モデル間標準偏差）</summary>
     public double TotalBugsUncertainty { get; init; }
     
+    /// <summary>総バグ数のモデル間の標準偏差（重み付き）</summary>
+    public double TotalBugsBetweenModelStdDev { get; init; }
+    
+    /// <summary>
+    /// 総バグ数のモデル内（パラメータ推定）の標準偏差 √Σwᵢ·Var(N̂ᵢ)（Fisher 情報行列・デルタ法）。
+    /// 計算できないモデルがある場合は NaN
+    /// </summary>
+    public double TotalBugsWithinModelStdDev { get; init; } = double.NaN;
+    
+    /// <summary>
+    /// 総バグ数の分散に占めるパラメータ推定の不確実性の割合（計算できない場合は NaN）
+    /// </summary>
+    public double ParameterUncertaintyShare { get; init; } = double.NaN;
+    
     /// <summary>予測時刻</summary>
     public double[] PredictionTimes { get; init; } = Array.Empty<double>();
     
@@ -66,6 +80,9 @@ public class ConvergencePredictionWithUncertainty
     
     /// <summary>予測に貢献したモデル数</summary>
     public int ContributingModels { get; init; }
+    
+    /// <summary>探索範囲内で到達しないモデルの重みの合計</summary>
+    public double UnreachableWeight { get; init; }
 }
 
 /// <summary>
@@ -77,6 +94,27 @@ public class ModelAveragingService
     private const double MIN_WEIGHT_THRESHOLD = 0.01; // 1%未満のモデルは「有効」カウントから除外
 
     /// <summary>
+    /// AIC 重みを計算できる結果（推奨モデルと同じ比較グループ）だけを選ぶ
+    /// </summary>
+    /// <remarks>
+    /// 尤度に含むデータが異なるモデル（FRE・TEF）とは AIC を比較できないため、
+    /// 異なる比較グループのモデルに重みを付けない。推奨対象外のモデルも除く。
+    /// </remarks>
+    private static List<FittingResult> SelectComparableResults(IEnumerable<FittingResult> results)
+    {
+        var comparable = results
+            .Where(ModelComparisonGroup.IsComparable)
+            .Where(r => double.IsFinite(r.AIC) && double.IsFinite(r.AICc))
+            .ToList();
+        var primaryGroup = ModelComparisonGroup.SelectPrimaryGroup(comparable);
+        var inGroup = comparable.Where(r => r.ComparisonGroup == primaryGroup).ToList();
+        
+        // 推奨対象外のモデル（総数が境界に張り付き・変化点が有意でない等）には重みを付けない
+        var eligible = inGroup.Where(r => r.SelectionExclusionReason == null).ToList();
+        return eligible.Count > 0 ? eligible : inGroup;
+    }
+
+    /// <summary>
     /// AIC重みを計算
     /// </summary>
     /// <param name="results">フィッティング結果のリスト</param>
@@ -86,9 +124,7 @@ public class ModelAveragingService
         IEnumerable<FittingResult> results,
         bool? useAICc = null)
     {
-        var validResults = results
-            .Where(r => r.Success && !double.IsInfinity(r.AIC) && !double.IsNaN(r.AIC))
-            .ToList();
+        var validResults = SelectComparableResults(results);
         
         if (!validResults.Any())
             return new Dictionary<string, double>();
@@ -134,11 +170,11 @@ public class ModelAveragingService
         Dictionary<string, ReliabilityGrowthModelBase> models,
         double[] predictionTimes,
         int currentDay = 0,
-        bool? useAICc = null)
+        bool? useAICc = null,
+        double[]? tData = null,
+        double[]? yData = null)
     {
-        var validResults = results
-            .Where(r => r.Success && !double.IsInfinity(r.AIC))
-            .ToList();
+        var validResults = SelectComparableResults(results);
         
         if (!validResults.Any())
         {
@@ -168,6 +204,11 @@ public class ModelAveragingService
         string bestModelName = "";
         double bestModelWeight = 0;
         
+        // モデル内（パラメータ推定）の分散 Σ wᵢ Var(N̂ᵢ)
+        double withinVariance = 0;
+        bool withinAvailable = tData != null && yData != null;
+        var fisherService = new FisherInformationService();
+        
         foreach (var result in validResults)
         {
             if (!weights.TryGetValue(result.ModelName, out double weight) || weight < 1e-10)
@@ -192,6 +233,14 @@ public class ModelAveragingService
             totalBugsWeightedSqSum += weight * totalBugs * totalBugs;
             totalWeight += weight;
             
+            // モデル内の分散（MLE・τ なしのモデルのみ Fisher 情報行列で計算できる）
+            if (withinAvailable)
+            {
+                double variance = TotalBugsVariance(fisherService, model, result, tData!, yData!);
+                if (double.IsFinite(variance)) withinVariance += weight * variance;
+                else withinAvailable = false;
+            }
+            
             // 最良モデルの更新
             if (weight > bestModelWeight)
             {
@@ -209,8 +258,13 @@ public class ModelAveragingService
             predictionStdErrors[t] = Math.Sqrt(Math.Max(0, variance));
         }
         
-        double totalBugsUncertainty = Math.Sqrt(
-            Math.Max(0, totalBugsWeightedSqSum - averagedTotalBugs * averagedTotalBugs));
+        double betweenVariance = Math.Max(0, totalBugsWeightedSqSum - averagedTotalBugs * averagedTotalBugs);
+        
+        // 無条件標準誤差（Burnham & Anderson 2002, 式 6.12）: √Σ wᵢ [Var(N̂ᵢ) + (N̂ᵢ - N̄)²]
+        // モデル内の分散が計算できない場合はモデル間の分散のみ
+        double totalBugsUncertainty = withinAvailable
+            ? Math.Sqrt(withinVariance + betweenVariance)
+            : Math.Sqrt(betweenVariance);
         
         // 有効モデル数（重み > 1%）
         int effectiveCount = weights.Count(kvp => kvp.Value > MIN_WEIGHT_THRESHOLD);
@@ -228,6 +282,11 @@ public class ModelAveragingService
             PredictionStandardErrors = predictionStdErrors,
             AveragedTotalBugs = averagedTotalBugs,
             TotalBugsUncertainty = totalBugsUncertainty,
+            TotalBugsBetweenModelStdDev = Math.Sqrt(betweenVariance),
+            TotalBugsWithinModelStdDev = withinAvailable ? Math.Sqrt(withinVariance) : double.NaN,
+            ParameterUncertaintyShare = withinAvailable && withinVariance + betweenVariance > 0
+                ? withinVariance / (withinVariance + betweenVariance)
+                : double.NaN,
             PredictionTimes = predictionTimes,
             EffectiveModelCount = effectiveCount,
             BestModelWeight = bestModelWeight,
@@ -238,14 +297,31 @@ public class ModelAveragingService
     }
 
     /// <summary>
-    /// モデル平均化による収束予測
+    /// モデルの推定総バグ数のパラメータ推定分散（Fisher 情報行列・デルタ法）。計算できなければ NaN
     /// </summary>
-    /// <param name="results">フィッティング結果</param>
-    /// <param name="models">モデル辞書</param>
-    /// <param name="weights">AIC重み</param>
-    /// <param name="targetRatios">目標割合のリスト</param>
-    /// <param name="currentDay">現在の日数</param>
-    /// <returns>マイルストーンごとの収束予測</returns>
+    private static double TotalBugsVariance(
+        FisherInformationService service, ReliabilityGrowthModelBase model, FittingResult result, double[] tData, double[] yData)
+    {
+        // Fisher 情報行列は発見数のみの Poisson-NHPP 尤度の最尤推定値でのみ有効（FRE・TEF は別の尤度）。τ は微分できない
+        if (result.LossFunctionUsed != "MLE"
+            || result.ComparisonGroup != ModelComparisonGroup.DetectionOnly
+            || model.ParameterNames.Any(n => n.StartsWith("τ")))
+            return double.NaN;
+        var fisher = service.CalculateNHPPStandardErrors(model, tData, yData, result.ParameterVector);
+        if (!fisher.Success || fisher.CovarianceMatrix == null)
+            return double.NaN;
+        var interval = service.CalculateDerivedInterval(model.GetAsymptoticTotalBugs, result.ParameterVector, fisher.CovarianceMatrix, logScale: false);
+        return double.IsFinite(interval.StandardError) ? interval.StandardError * interval.StandardError : double.NaN;
+    }
+    
+    /// <summary>
+    /// 収束マイルストーン到達日のモデル平均
+    /// </summary>
+    /// <remarks>
+    /// 各モデルで m(t) = ratio × m(∞) となる日を t=0 から求める（すでに到達済みのモデルは観測期間内の日になる）。
+    /// 以前は「到達済み」「到達しない」モデルを平均から除いていたため、残ったモデルに偏っていた。
+    /// 到達しないモデルの重みは UnreachableWeight として示し、平均は到達するモデルの重みで正規化する。
+    /// </remarks>
     private static Dictionary<string, ConvergencePredictionWithUncertainty> PredictConvergence(
         IEnumerable<FittingResult> results,
         Dictionary<string, ReliabilityGrowthModelBase> models,
@@ -258,40 +334,34 @@ public class ModelAveragingService
         foreach (double ratio in targetRatios)
         {
             string milestone = $"{ratio * 100:F0}%";
-            
-            double weightedDay = 0;
-            double weightedDaySq = 0;
-            double contributingWeight = 0;
+            double weightedDay = 0, weightedDaySq = 0, reachableWeight = 0, unreachableWeight = 0;
             int contributingCount = 0;
             
             foreach (var result in results)
             {
                 if (!weights.TryGetValue(result.ModelName, out double weight) || weight < 1e-10)
                     continue;
-                
                 if (!models.TryGetValue(result.ModelName, out var model))
                     continue;
                 
-                var predictedDay = model.PredictDayForRatio(ratio, result.ParameterVector, currentDay);
-                
-                if (predictedDay.HasValue && 
-                    !double.IsInfinity(predictedDay.Value) && 
-                    !double.IsNaN(predictedDay.Value) &&
-                    predictedDay.Value > 0)
+                double day = model.DayForRatio(ratio, result.ParameterVector);
+                if (double.IsFinite(day))
                 {
-                    weightedDay += weight * predictedDay.Value;
-                    weightedDaySq += weight * predictedDay.Value * predictedDay.Value;
-                    contributingWeight += weight;
+                    weightedDay += weight * day;
+                    weightedDaySq += weight * day * day;
+                    reachableWeight += weight;
                     contributingCount++;
+                }
+                else
+                {
+                    unreachableWeight += weight;
                 }
             }
             
-            if (contributingWeight > 0 && contributingCount > 0)
+            if (reachableWeight > 0)
             {
-                double avgDay = weightedDay / contributingWeight;
-                double variance = weightedDaySq / contributingWeight - avgDay * avgDay;
-                double stdDev = Math.Sqrt(Math.Max(0, variance));
-                
+                double avgDay = weightedDay / reachableWeight;
+                double stdDev = Math.Sqrt(Math.Max(0, weightedDaySq / reachableWeight - avgDay * avgDay));
                 predictions[milestone] = new ConvergencePredictionWithUncertainty
                 {
                     Milestone = milestone,
@@ -300,7 +370,8 @@ public class ModelAveragingService
                     PredictedDayStdDev = stdDev,
                     LowerBound = avgDay - stdDev,
                     UpperBound = avgDay + stdDev,
-                    ContributingModels = contributingCount
+                    ContributingModels = contributingCount,
+                    UnreachableWeight = unreachableWeight
                 };
             }
             else
@@ -310,14 +381,15 @@ public class ModelAveragingService
                     Milestone = milestone,
                     Ratio = ratio,
                     AveragedPredictedDay = null,
-                    ContributingModels = 0
+                    ContributingModels = 0,
+                    UnreachableWeight = unreachableWeight
                 };
             }
         }
         
         return predictions;
     }
-
+    
     /// <summary>
     /// モデル平均化結果をテキスト形式でフォーマット
     /// </summary>
@@ -353,9 +425,17 @@ public class ModelAveragingService
         sb.AppendLine("  推定総バグ数（モデル平均化）");
         sb.AppendLine("─────────────────────────────────────────────────────────────────");
         sb.AppendLine($"  平均: {result.AveragedTotalBugs:F1}");
-        sb.AppendLine($"  モデル間標準偏差: ±{result.TotalBugsUncertainty:F1}");
-        sb.AppendLine($"  ※ この不確実性は「モデル間の違い」に由来するものであり、");
-        sb.AppendLine($"    各モデルのパラメータ推定の不確実性は含まれていません。");
+        if (double.IsFinite(result.TotalBugsWithinModelStdDev))
+        {
+            sb.AppendLine($"  無条件標準誤差: ±{result.TotalBugsUncertainty:F1}（Burnham & Anderson）");
+            sb.AppendLine($"    パラメータ推定の不確実性: ±{result.TotalBugsWithinModelStdDev:F1}（分散の {result.ParameterUncertaintyShare:P0}）");
+            sb.AppendLine($"    モデル選択の不確実性:     ±{result.TotalBugsBetweenModelStdDev:F1}（分散の {1 - result.ParameterUncertaintyShare:P0}）");
+        }
+        else
+        {
+            sb.AppendLine($"  モデル間標準偏差: ±{result.TotalBugsUncertainty:F1}");
+            sb.AppendLine($"  ※ パラメータ推定の不確実性は含まれていません（SSE 推定または変化点モデルを含むため Fisher 情報行列で計算できません）。");
+        }
         sb.AppendLine();
         
         // 収束予測
@@ -367,14 +447,15 @@ public class ModelAveragingService
             
             foreach (var (milestone, pred) in result.ConvergencePredictions.OrderBy(x => x.Value.Ratio))
             {
+                string unreachable = pred.UnreachableWeight > 0.001 ? $"、到達しないモデルの重み {pred.UnreachableWeight:P0}" : "";
                 if (pred.AveragedPredictedDay.HasValue)
                 {
                     sb.AppendLine($"  {milestone}: 日{pred.AveragedPredictedDay:F0} " +
-                                  $"(±{pred.PredictedDayStdDev:F0}日, {pred.ContributingModels}モデル)");
+                                  $"(モデル間 ±{pred.PredictedDayStdDev:F0}日, {pred.ContributingModels}モデル{unreachable})");
                 }
                 else
                 {
-                    sb.AppendLine($"  {milestone}: 予測不可");
+                    sb.AppendLine($"  {milestone}: 予測不可{unreachable}");
                 }
             }
             sb.AppendLine();

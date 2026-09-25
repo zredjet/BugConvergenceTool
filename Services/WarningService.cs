@@ -28,14 +28,14 @@ public static class WarningService
         public const int FewTotalBugs = 20;
         
         /// <summary>
-        /// 高いMAPE（予測精度低下の警告）
+        /// ホールドアウト期間の発見数の相対誤差（絶対値、%）が高い（予測精度低下の警告）
         /// </summary>
-        public const double HighMape = 50.0;
+        public const double HighHoldoutError = 30.0;
         
         /// <summary>
-        /// 非常に高いMAPE（信頼性警告）
+        /// ホールドアウト期間の発見数の相対誤差（絶対値、%）が非常に高い（信頼性警告）
         /// </summary>
-        public const double VeryHighMape = 100.0;
+        public const double VeryHighHoldoutError = 60.0;
     }
     
     /// <summary>
@@ -82,31 +82,32 @@ public static class WarningService
     {
         var warnings = new List<string>();
         
-        if (!result.HoldoutMape.HasValue)
+        if (!result.HoldoutIncrementErrorPercent.HasValue)
             return warnings;
         
-        double mape = result.HoldoutMape.Value;
+        double error = result.HoldoutIncrementErrorPercent.Value;
+        double absError = Math.Abs(error);
+        string direction = error > 0 ? "過大" : "過小";
         
-        // MAPEが高い
-        if (mape > Thresholds.VeryHighMape)
+        if (absError > Thresholds.VeryHighHoldoutError)
         {
-            warnings.Add($"ホールドアウト検証でMAPEが{mape:F1}%と非常に高く、このモデルの将来予測は信頼できない可能性があります。");
+            warnings.Add($"ホールドアウト検証で末尾期間の発見数を{absError:F1}%{direction}に予測しており、このモデルの将来予測は信頼できない可能性があります。");
         }
-        else if (mape > Thresholds.HighMape)
+        else if (absError > Thresholds.HighHoldoutError)
         {
-            warnings.Add($"ホールドアウト検証でMAPEが{mape:F1}%と高く、将来予測の不確実性が高いと考えられます。");
+            warnings.Add($"ホールドアウト検証で末尾期間の発見数を{absError:F1}%{direction}に予測しており、将来予測の不確実性が高いと考えられます。");
         }
         
         // 他モデルと比較して明らかに悪い
-        var successfulResults = allResults.Where(r => r.Success && r.HoldoutMape.HasValue).ToList();
+        var successfulResults = allResults.Where(r => r.Success && r.HoldoutAbsIncrementErrorPercent.HasValue).ToList();
         if (successfulResults.Count > 1)
         {
-            double avgMape = successfulResults.Average(r => r.HoldoutMape!.Value);
-            double minMape = successfulResults.Min(r => r.HoldoutMape!.Value);
+            double avgError = successfulResults.Average(r => r.HoldoutAbsIncrementErrorPercent!.Value);
+            double minError = successfulResults.Min(r => r.HoldoutAbsIncrementErrorPercent!.Value);
             
-            if (mape > avgMape * 1.5 && mape > minMape * 2)
+            if (absError > avgError * 1.5 && absError > minError * 2)
             {
-                warnings.Add($"本モデルのMAPE（{mape:F1}%）は他モデルの平均（{avgMape:F1}%）より明らかに高く、予測性能が低い可能性があります。");
+                warnings.Add($"本モデルのホールドアウト誤差（{absError:F1}%）は他モデルの平均（{avgError:F1}%）より明らかに大きく、予測性能が低い可能性があります。");
             }
         }
         
@@ -128,23 +129,24 @@ public static class WarningService
             return warnings;
         
         // AICベストだがホールドアウトでは最良でない場合
-        if (selectedResult.HoldoutMape.HasValue)
+        if (selectedResult.HoldoutAbsIncrementErrorPercent.HasValue)
         {
-            var bestByMape = successfulResults
-                .Where(r => r.HoldoutMape.HasValue)
-                .OrderBy(r => r.HoldoutMape!.Value)
+            var bestByHoldout = successfulResults
+                .Where(r => r.HoldoutAbsIncrementErrorPercent.HasValue)
+                .OrderBy(r => r.HoldoutAbsIncrementErrorPercent!.Value)
                 .FirstOrDefault();
             
-            if (bestByMape != null && bestByMape.ModelName != selectedResult.ModelName)
+            if (bestByHoldout != null && bestByHoldout.ModelName != selectedResult.ModelName)
             {
-                double selectedMape = selectedResult.HoldoutMape.Value;
-                double bestMape = bestByMape.HoldoutMape!.Value;
+                double selectedError = selectedResult.HoldoutAbsIncrementErrorPercent.Value;
+                double bestError = bestByHoldout.HoldoutAbsIncrementErrorPercent!.Value;
                 
-                if (selectedMape > bestMape * 1.3)
+                // 相対比較だけだと誤差が数%同士でも警告が出るため、差が5ポイント以上ある場合に限る
+                if (selectedError > bestError * 1.3 && selectedError - bestError >= 5.0)
                 {
-                    warnings.Add($"AIC最小で選択された '{selectedResult.ModelName}' のMAPE（{selectedMape:F1}%）は、" +
-                                $"MAPE最小の '{bestByMape.ModelName}'（{bestMape:F1}%）より高いです。" +
-                                $"予測精度を重視する場合は後者を検討してください。");
+                    warnings.Add($"AIC最小で選択された '{selectedResult.ModelName}' のホールドアウト誤差（{selectedError:F1}%）は、" +
+                                $"誤差最小の '{bestByHoldout.ModelName}'（{bestError:F1}%）より大きいです。" +
+                                $"予測精度を重視する場合は後者も検討してください。");
                 }
             }
         }

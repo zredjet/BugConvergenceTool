@@ -167,89 +167,78 @@ public static class OptimizerFactory
     }
     
     /// <summary>
-    /// マルチスタート最適化：複数の初期点から最適化を行い、最良の結果を返す
+    /// マルチスタート最適化（Latin Hypercube Sampling による複数の開始点から並列に探索し最良解を返す）
     /// </summary>
-    /// <param name="objectiveFunction">目的関数</param>
-    /// <param name="lowerBounds">パラメータ下限</param>
-    /// <param name="upperBounds">パラメータ上限</param>
-    /// <param name="initialGuess">初期推定値（基準点として使用）</param>
-    /// <param name="optimizer">使用するオプティマイザ</param>
-    /// <param name="numStarts">開始点の数（デフォルト: 5）</param>
+    /// <param name="objectiveFunction">目的関数（スレッドセーフであること）</param>
+    /// <param name="lowerBounds">下限</param>
+    /// <param name="upperBounds">上限</param>
+    /// <param name="initialGuess">初期推定値（開始点の1つに含める）</param>
+    /// <param name="optimizerFactory">
+    /// 最適化器の生成関数。最適化器は乱数などの内部状態を持つため、開始点ごとに新しいインスタンスを使う
+    /// </param>
+    /// <param name="numStarts">開始点の数</param>
     /// <param name="verbose">詳細出力</param>
-    /// <returns>最良の最適化結果</returns>
     /// <remarks>
-    /// <para>
-    /// マルチスタート法は局所最適解の問題を軽減するために複数の初期点から最適化を実行します。
-    /// 初期点の生成方法：
-    /// 1. 指定された初期推定値（あれば）
-    /// 2. ラテン超方格サンプリング（LHS）による分散配置
-    /// 3. 境界付近のサンプリング（パラメータが境界に張り付くケースに対応）
-    /// </para>
+    /// 戻り値の <see cref="OptimizationResult.StartsConvergedToBest"/> は最良解と同じ目的関数値
+    /// （相対差 1e-6 以内）に到達した開始点の数で、少なければ解が初期点に依存している可能性がある。
     /// </remarks>
     public static OptimizationResult MultiStartOptimize(
         Func<double[], double> objectiveFunction,
         double[] lowerBounds,
         double[] upperBounds,
         double[]? initialGuess = null,
-        IOptimizer? optimizer = null,
+        Func<IOptimizer>? optimizerFactory = null,
         int numStarts = 5,
         bool verbose = false)
     {
-        optimizer ??= Create(OptimizerType.DifferentialEvolution);
-        int dim = lowerBounds.Length;
+        optimizerFactory ??= () => Create(OptimizerType.DifferentialEvolution);
+        string optimizerName = optimizerFactory().Name;
         
-        // 初期点を生成
         var startPoints = GenerateStartPoints(lowerBounds, upperBounds, initialGuess, numStarts);
-        
-        var results = new List<OptimizationResult>();
+        var results = new OptimizationResult?[startPoints.Count];
         
         if (verbose)
         {
-            Console.WriteLine($"  マルチスタート最適化: {numStarts}点から{optimizer.Name}で探索...");
+            Console.WriteLine($"  マルチスタート最適化: {startPoints.Count}点から{optimizerName}で探索...");
         }
         
-        int startIdx = 0;
-        foreach (var startPoint in startPoints)
+        Parallel.For(0, startPoints.Count, idx =>
         {
             try
             {
-                var result = optimizer.Optimize(objectiveFunction, lowerBounds, upperBounds, startPoint);
-                
-                if (result.Success)
-                {
-                    results.Add(result);
-                    
-                    if (verbose)
-                    {
-                        Console.WriteLine($"    開始点{startIdx + 1}: 目的関数値={result.ObjectiveValue:E4}");
-                    }
-                }
+                var result = optimizerFactory().Optimize(objectiveFunction, lowerBounds, upperBounds, startPoints[idx]);
+                if (result.Success && double.IsFinite(result.ObjectiveValue))
+                    results[idx] = result;
             }
             catch
             {
                 // 個別の最適化失敗は無視
             }
-            
-            startIdx++;
-        }
+        });
         
-        if (results.Count == 0)
+        var succeeded = results.Where(r => r != null).Select(r => r!).ToList();
+        if (succeeded.Count == 0)
         {
             return new OptimizationResult
             {
                 Success = false,
                 ErrorMessage = "全ての開始点で最適化に失敗しました",
-                AlgorithmName = $"MultiStart({optimizer.Name})"
+                AlgorithmName = $"MultiStart({optimizerName})",
+                StartsAttempted = startPoints.Count
             };
         }
         
-        // 最良結果を選択
-        var bestResult = results.OrderBy(r => r.ObjectiveValue).First();
-        bestResult.AlgorithmName = $"MultiStart({optimizer.Name})";
+        var bestResult = succeeded.OrderBy(r => r.ObjectiveValue).First();
+        double tolerance = 1e-6 * Math.Max(1.0, Math.Abs(bestResult.ObjectiveValue));
+        bestResult.AlgorithmName = $"MultiStart({optimizerName})";
+        bestResult.StartsAttempted = startPoints.Count;
+        bestResult.StartsSucceeded = succeeded.Count;
+        bestResult.StartsConvergedToBest = succeeded.Count(r => r.ObjectiveValue - bestResult.ObjectiveValue <= tolerance);
+        bestResult.FunctionEvaluations = succeeded.Sum(r => r.FunctionEvaluations);
         
         if (verbose)
         {
-            Console.WriteLine($"    最良結果: 目的関数値={bestResult.ObjectiveValue:E4}");
+            Console.WriteLine($"    最良値={bestResult.ObjectiveValue:E4}, 同じ解に収束: {bestResult.StartsConvergedToBest}/{bestResult.StartsSucceeded}");
         }
         
         return bestResult;

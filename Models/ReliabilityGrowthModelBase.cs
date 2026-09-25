@@ -10,6 +10,47 @@ public class FittingResult
 {
     public string ModelName { get; set; } = "";
     public string Category { get; set; } = "基本";
+    
+    /// <summary>
+    /// 推定に使ったモデルのインスタンス（TEF の工数データなど推定時の状態を保持）
+    /// </summary>
+    public ReliabilityGrowthModelBase? Model { get; set; }
+    
+    /// <summary>
+    /// 推奨モデルの選択対象から外す理由（null なら対象）
+    /// 例: 潜在バグ総数が探索範囲の上限に張り付いている、変化点が尤度比検定で有意でない
+    /// </summary>
+    public string? SelectionExclusionReason { get; set; }
+    
+    /// <summary>
+    /// 変化点の尤度比検定の結果（変化点モデルで検定を実行した場合）
+    /// </summary>
+    public Services.ChangePointLRTResult? ChangePointTest { get; set; }
+    
+    /// <summary>
+    /// Fisher 情報行列による漸近的な標準誤差・信頼区間（--ci かつ MLE の場合）
+    /// </summary>
+    public Services.FisherInformationResult? FisherInformation { get; set; }
+    
+    /// <summary>
+    /// Fisher 情報行列（デルタ法）による推定潜在バグ総数の信頼区間
+    /// </summary>
+    public Services.DerivedQuantityInterval? TotalBugsFisherInterval { get; set; }
+    
+    /// <summary>
+    /// パラメトリック・ブートストラップによる予測区間（--pi の場合）
+    /// </summary>
+    public Services.PredictionIntervalResult? PredictionInterval { get; set; }
+    
+    /// <summary>
+    /// マルチスタート最適化の開始点数（1 ならマルチスタートなし）
+    /// </summary>
+    public int OptimizationStarts { get; set; } = 1;
+    
+    /// <summary>
+    /// マルチスタート最適化で最良解と同じ解に収束した開始点数
+    /// </summary>
+    public int StartsConvergedToBest { get; set; } = 1;
     public Dictionary<string, double> Parameters { get; set; } = new();
     public double R2 { get; set; }
     public double MSE { get; set; }
@@ -32,7 +73,12 @@ public class FittingResult
     /// ModelSelectionCriterion に応じて AIC または AICc の値を返す
     /// </summary>
     public double SelectionScore => ModelSelectionCriterion == "AICc" ? AICc : AIC;
-    
+
+    /// <summary>
+    /// 比較グループ（AIC を比較できるモデルの組。<see cref="Services.ModelComparisonGroup"/> 参照）
+    /// </summary>
+    public string ComparisonGroup { get; set; } = Services.ModelComparisonGroup.DetectionOnly;
+
     public double[] PredictedValues { get; set; } = Array.Empty<double>();
     public bool Success { get; set; }
     public string? ErrorMessage { get; set; }
@@ -40,11 +86,13 @@ public class FittingResult
     // 収束予測
     public Dictionary<string, ConvergencePrediction> ConvergencePredictions { get; set; } = new();
     
-    // 推定潜在バグ数（パラメータa）
-    public double EstimatedTotalBugs => Parameters.GetValueOrDefault("a", 0);
+    /// <summary>
+    /// 推定潜在バグ総数（漸近値 m(∞)）
+    /// フィッティング時に <see cref="ReliabilityGrowthModelBase.GetAsymptoticTotalBugs"/> で設定する。
+    /// パラメータ a は m(∞) と一致しないモデル（有限工数の TEF 組込モデル等）があるため直接使わないこと。
+    /// </summary>
+    public double EstimatedTotalBugs { get; set; }
     
-    // 不完全デバッグ率（パラメータp）
-    public double? ImperfectDebugRate => Parameters.ContainsKey("p") ? Parameters["p"] : null;
     
     // オプティマイザ情報
     public string OptimizerUsed { get; set; } = "";
@@ -57,25 +105,40 @@ public class FittingResult
     // 信頼区間計算用：予測時刻（PredictedValues に対応する X 軸）
     public double[] PredictionTimes { get; set; } = Array.Empty<double>();
     
-    // 95%信頼区間（ブートストラップ法で計算）
-    public double[]? LowerConfidenceBounds { get; set; }
-    public double[]? UpperConfidenceBounds { get; set; }
+    /// <summary>
+    /// ブートストラップによる m(t)・総数・収束日の信頼区間（--ci の場合）
+    /// </summary>
+    public Services.ConfidenceBandResult? ConfidenceBand { get; set; }
     
     // ホールドアウト検証結果（オプション）
-    /// <summary>
-    /// ホールドアウト検証の平均二乗誤差（MSE）
-    /// </summary>
-    public double? HoldoutMse { get; set; }
+    // 検証用パラメータは訓練区間のみで別途推定したもの。最終結果（Parameters・AIC・収束予測）は全データで推定する。
     
     /// <summary>
-    /// ホールドアウト検証の平均絶対パーセント誤差（MAPE）%
+    /// ホールドアウト検証の結果（未実施なら null）
     /// </summary>
-    public double? HoldoutMape { get; set; }
+    public Services.HoldoutValidationResult? Holdout { get; set; }
     
     /// <summary>
-    /// ホールドアウト検証の平均絶対誤差（MAE）
+    /// ホールドアウト検証用に訓練区間のみで推定したパラメータ
     /// </summary>
-    public double? HoldoutMae { get; set; }
+    public double[]? HoldoutTrainParameters { get; set; }
+    
+    /// <summary>
+    /// ホールドアウト期間の発見数の相対誤差（%、符号付き。正=過大予測）
+    /// </summary>
+    public double? HoldoutIncrementErrorPercent =>
+        Holdout != null && double.IsFinite(Holdout.IncrementErrorPercent) ? Holdout.IncrementErrorPercent : null;
+    
+    /// <summary>
+    /// ホールドアウト期間の日次増分の平均絶対誤差（件/日）
+    /// </summary>
+    public double? HoldoutDailyMae => Holdout?.DailyMae;
+    
+    /// <summary>
+    /// ホールドアウト予測誤差の大きさ（モデル間の順位付け用。期間増分の相対誤差の絶対値）
+    /// </summary>
+    public double? HoldoutAbsIncrementErrorPercent =>
+        HoldoutIncrementErrorPercent.HasValue ? Math.Abs(HoldoutIncrementErrorPercent.Value) : null;
     
     /// <summary>
     /// 使用した損失関数タイプ
@@ -88,9 +151,9 @@ public class FittingResult
     public List<string> Warnings { get; set; } = new();
     
     /// <summary>
-    /// 感度分析結果（推定総バグ数に対する感度）
+    /// 推定の安定性（末尾の日を除いて推定し直したときの総数の変化。推奨モデルのみ）
     /// </summary>
-    public Services.SensitivityReport? SensitivityAnalysis { get; set; }
+    public Services.StabilityAnalysisResult? Stability { get; set; }
     
     /// <summary>
     /// 変化点探索結果（変化点モデルの場合のみ）
@@ -176,40 +239,29 @@ public abstract class ReliabilityGrowthModelBase
     #region 共通ヘルパ（初期値推定用）
 
     /// <summary>
-    /// 観測値の累積系列を計算
+    /// 累積系列が最終値の targetRatio 倍に初めて達する日（1始まりの日数を返す）
+    /// 到達しない場合は最終日を返す
     /// </summary>
-    protected static double[] ComputeCumulative(double[] yData)
+    /// <param name="cumulative">累積バグ数（GetInitialParameters に渡される yData はすでに累積値）</param>
+    /// <remarks>
+    /// 以前は累積値をさらに累積してから比率を求めていたため、到達日が大きく後ろにずれていた
+    /// （例: 50% 到達日 15 日が 30 日と算出される）。
+    /// </remarks>
+    protected static double FindDayForCumulativeRatio(double[] cumulative, double targetRatio)
     {
-        var cum = new double[yData.Length];
-        double s = 0;
-        for (int i = 0; i < yData.Length; i++)
-        {
-            s += yData[i];
-            cum[i] = s;
-        }
-        return cum;
-    }
+        if (cumulative.Length == 0) return 1.0;
 
-    /// <summary>
-    /// 累積系列が targetRatio に初めて達するインデックス（1始まりの日数を返す）
-    /// 到達しない場合は最終日のインデックスを返す
-    /// </summary>
-    protected static double FindDayForCumulativeRatio(double[] yData, double targetRatio)
-    {
-        if (yData.Length == 0) return 1.0;
-
-        var cum = ComputeCumulative(yData);
-        double total = cum[^1];
+        double total = cumulative[^1];
         if (total <= 0) return 1.0;
 
         double target = total * targetRatio;
-        for (int i = 0; i < cum.Length; i++)
+        for (int i = 0; i < cumulative.Length; i++)
         {
-            if (cum[i] >= target)
+            if (cumulative[i] >= target)
                 return i + 1.0; // 1始まりの日数に対応
         }
 
-        return cum.Length;
+        return cumulative.Length;
     }
 
     /// <summary>
@@ -297,14 +349,6 @@ public abstract class ReliabilityGrowthModelBase
     }
     
     /// <summary>
-    /// 設定から不完全デバッグ係数 p の初期値を取得
-    /// </summary>
-    protected static double GetImperfectDebugP0()
-    {
-        return ConfigurationService.Current.ImperfectDebug.P0;
-    }
-    
-    /// <summary>
     /// 設定から初期欠陥除去効率 η₀ を取得
     /// </summary>
     protected static double GetEta0()
@@ -318,14 +362,6 @@ public abstract class ReliabilityGrowthModelBase
     protected static double GetEtaInfinity()
     {
         return ConfigurationService.Current.ImperfectDebug.EtaInfinity;
-    }
-    
-    /// <summary>
-    /// 設定からバグ混入率 α の初期値を取得
-    /// </summary>
-    protected static double GetAlpha0()
-    {
-        return ConfigurationService.Current.ImperfectDebug.Alpha0;
     }
     
     /// <summary>
@@ -380,44 +416,31 @@ public abstract class ReliabilityGrowthModelBase
     }
     
     /// <summary>
-    /// 指定割合に到達する日を予測
+    /// m(t) = ratio × m(∞) となる日（t=0 から二分法）。到達しなければ +∞
     /// </summary>
-    public double? PredictDayForRatio(double ratio, double[] parameters, int currentDay)
+    /// <remarks>
+    /// 収束予測・予測区間・モデル平均化で共通に使う。以前は収束予測だけ別実装（現在日から探索し、
+    /// モデル上すでに到達していると null を返す）で、観測値が未到達・モデル値が到達済みのとき「予測不可」と表示されていた。
+    /// </remarks>
+    public double DayForRatio(double ratio, double[] parameters)
     {
-        double totalBugs = GetAsymptoticTotalBugs(parameters);
-        double target = totalBugs * ratio;
-        double currentValue = Calculate(currentDay, parameters);
+        double target = GetAsymptoticTotalBugs(parameters) * ratio;
+        if (!double.IsFinite(target) || target <= 0) return double.PositiveInfinity;
         
-        // 既に到達済み
-        if (currentValue >= target)
-            return null;
-        
-        // 二分法で探索
-        double tLow = currentDay;
-        double tHigh = currentDay * 10;
-        
-        // 上限を拡大
-        while (Calculate(tHigh, parameters) < target && tHigh < 10000)
-            tHigh *= 2;
-        
-        if (Calculate(tHigh, parameters) < target)
-            return double.PositiveInfinity;
-        
-        // 二分法
-        for (int i = 0; i < 100; i++)
+        double lo = 0, hi = 1;
+        while (Calculate(hi, parameters) < target)
         {
-            double tMid = (tLow + tHigh) / 2;
-            double valMid = Calculate(tMid, parameters);
-            
-            if (Math.Abs(valMid - target) < 0.01)
-                return tMid;
-            
-            if (valMid < target)
-                tLow = tMid;
-            else
-                tHigh = tMid;
+            hi *= 2;
+            if (hi > MaxMilestoneSearchDay) return double.PositiveInfinity;
         }
-        
-        return (tLow + tHigh) / 2;
+        for (int i = 0; i < 100 && hi - lo > 1e-6; i++)
+        {
+            double mid = (lo + hi) / 2;
+            if (Calculate(mid, parameters) < target) lo = mid; else hi = mid;
+        }
+        return (lo + hi) / 2;
     }
+    
+    /// <summary>マイルストーン到達日を探す最大日数</summary>
+    private const double MaxMilestoneSearchDay = 1e5;
 }

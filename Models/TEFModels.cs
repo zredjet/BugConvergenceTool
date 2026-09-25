@@ -40,10 +40,39 @@ public abstract class TEFBasedModelBase : ReliabilityGrowthModelBase
     /// <summary>
     /// 時刻 t における累積工数 W(t) を計算
     /// </summary>
+    /// <remarks>
+    /// 観測開始（t=0）からの消費工数 W(t) - W(0) を返す。
+    /// ロジスティック型 TEF のように W(0) ≠ 0 の関数でも m(0) = 0 となり、
+    /// 実測の累積工数（観測開始から積算）とも同じ基準で比較できる。
+    /// </remarks>
     public double CalculateEffort(double t, double[] parameters)
     {
         var tefParams = GetTEFParams(parameters);
-        return _tef.CalculateW(t, tefParams);
+        return _tef.CalculateW(t, tefParams) - _tef.CalculateW(0, tefParams);
+    }
+    
+    /// <summary>
+    /// 累積工数 W における平均値関数 m(W) を計算
+    /// W = +∞（無限工数関数の t→∞）も扱えること
+    /// </summary>
+    protected abstract double CalculateAtEffort(double W, double[] parameters);
+    
+    public override double Calculate(double t, double[] parameters)
+    {
+        return CalculateAtEffort(CalculateEffort(t, parameters), parameters);
+    }
+    
+    /// <summary>
+    /// 漸近的総欠陥数: m(∞) = m(W(∞))
+    /// </summary>
+    /// <remarks>
+    /// 有限工数関数（W(∞)=N）では工数を使い切った時点の値となり、a とは一致しない。
+    /// </remarks>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        var tefParams = GetTEFParams(parameters);
+        double totalEffort = _tef.CalculateTotalEffort(tefParams) - _tef.CalculateW(0, tefParams);
+        return CalculateAtEffort(totalEffort, parameters);
     }
     
     /// <summary>
@@ -94,13 +123,10 @@ public class TEFExponentialModel : TEFBasedModelBase
     
     protected override int TEFParamStartIndex => 2;
     
-    public override double Calculate(double t, double[] parameters)
+    protected override double CalculateAtEffort(double W, double[] parameters)
     {
         double a = parameters[0];
         double b = parameters[1];
-        var tefParams = GetTEFParams(parameters);
-        
-        double W = _tef.CalculateW(t, tefParams);
         return a * (1 - Math.Exp(-b * W));
     }
     
@@ -173,13 +199,15 @@ public class TEFDelayedSModel : TEFBasedModelBase
     
     protected override int TEFParamStartIndex => 2;
     
-    public override double Calculate(double t, double[] parameters)
+    protected override double CalculateAtEffort(double W, double[] parameters)
     {
         double a = parameters[0];
         double b = parameters[1];
-        var tefParams = GetTEFParams(parameters);
         
-        double W = _tef.CalculateW(t, tefParams);
+        // W=∞ では (1+bW)e^(-bW) が ∞·0 になるため極限値 0 を使う
+        if (double.IsPositiveInfinity(W))
+            return a;
+        
         double bW = b * W;
         return a * (1 - (1 + bW) * Math.Exp(-bW));
     }
@@ -230,118 +258,6 @@ public class TEFDelayedSModel : TEFBasedModelBase
 }
 
 /// <summary>
-/// TEF組込不完全デバッグモデル
-/// a(t) = a + α·m(t)
-/// dm(t)/dt = b·w(t)·[a(t) - m(t)]
-/// </summary>
-public class TEFImperfectDebugModel : TEFBasedModelBase
-{
-    public TEFImperfectDebugModel(ITestEffortFunction tef) : base(tef) { }
-    
-    public override string Name => $"TEF不完全デバッグ({_tef.Name})";
-    public override string Category => "TEF+不完全";
-    public override string Formula => $"dm/dt = bw(a+αm-m), {_tef.Formula}";
-    public override string Description => $"不完全デバッグ + {_tef.Description}";
-    
-    public override string[] ParameterNames
-    {
-        get
-        {
-            var names = new List<string> { "a", "b", "α" };
-            names.AddRange(_tef.ParameterNames.Select(n => $"TEF_{n}"));
-            return names.ToArray();
-        }
-    }
-    
-    protected override int TEFParamStartIndex => 3;
-    
-    /// <summary>
-    /// 漸近的総欠陥数: a / (1 - α)
-    /// </summary>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        double a = parameters[0];
-        double alpha = parameters[2];
-        
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        return a / (1 - alpha);
-    }
-    
-    public override double Calculate(double t, double[] parameters)
-    {
-        double a = parameters[0];
-        double b = parameters[1];
-        double alpha = parameters[2];
-        var tefParams = GetTEFParams(parameters);
-        
-        double W = _tef.CalculateW(t, tefParams);
-        
-        // 解析解: m(t) = a(1 - e^(-b(1-α)W)) / (1 - α(1 - e^(-b(1-α)W)))
-        // ただし α < 1 の場合
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        double factor = 1 - alpha;
-        double expTerm = Math.Exp(-b * factor * W);
-        double numerator = a * (1 - expTerm);
-        double denominator = 1 - alpha * (1 - expTerm);
-        
-        if (denominator <= 0)
-            return a;
-        
-        return numerator / denominator;
-    }
-    
-    public override double[] GetInitialParameters(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        var effortData = GetEffortDataForTEF(yData);
-        var tefInit = _tef.GetInitialParameters(tData, effortData);
-
-        int n = tData.Length;
-
-        // a: 不完全デバッグを考慮して 1.3〜1.7×maxY
-        double last = yData[^1];
-        double prev = n > 1 ? yData[^2] : yData[^1];
-        double increment = last - prev;
-        double a0 = increment <= 1.0 ? maxY * 1.3 : maxY * 1.7;
-
-        // b: 平均増分から指数型と同様に初期化
-        double avgSlope = EstimateAverageSlope(yData);
-        double b0 = avgSlope switch
-        {
-            <= 0.1 => 0.02,
-            <= 0.5 => 0.05,
-            <= 1.0 => 0.1,
-            _ => 0.2
-        };
-
-        double alpha0 = 0.1;
-
-        var initial = new List<double> { a0, b0, alpha0 };
-        initial.AddRange(tefInit);
-        return initial.ToArray();
-    }
-    
-    public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        var effortData = GetEffortDataForTEF(yData);
-        var (tefLower, tefUpper) = _tef.GetBounds(tData, effortData);
-        
-        var lower = new List<double> { maxY, 0.0001, -0.5 };
-        lower.AddRange(tefLower);
-        
-        var upper = new List<double> { maxY * 5, 1.0, 0.99 };
-        upper.AddRange(tefUpper);
-        
-        return (lower.ToArray(), upper.ToArray());
-    }
-}
-
-/// <summary>
 /// TEF組込モデルのファクトリ
 /// </summary>
 public static class TEFModelFactory
@@ -353,7 +269,6 @@ public static class TEFModelFactory
     {
         yield return new TEFExponentialModel(tef);
         yield return new TEFDelayedSModel(tef);
-        yield return new TEFImperfectDebugModel(tef);
     }
     
     /// <summary>

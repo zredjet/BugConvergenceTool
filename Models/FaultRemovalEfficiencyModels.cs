@@ -205,203 +205,6 @@ public class LearningFREModel : FaultRemovalEfficiencyModelBase
 }
 
 /// <summary>
-/// エラー生成モデル
-/// 欠陥修正時に新たな欠陥が導入される
-/// a(t) = a₀ + α·m_d(t)
-/// </summary>
-public class ErrorGenerationModel : FaultRemovalEfficiencyModelBase
-{
-    public override string Name => "エラー生成";
-    public override string Formula => "a(t) = a₀ + α·m_d(t)";
-    public override string Description => "修正時に新欠陥が導入";
-    public override string[] ParameterNames => new[] { "a₀", "b", "α" };
-    
-    /// <summary>
-    /// 漸近的総欠陥数: a₀ / (1 - α)
-    /// </summary>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        double a0 = parameters[0];
-        double alpha = parameters[2];
-        
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        return a0 / (1 - alpha);
-    }
-    
-    public override double CalculateDetected(double t, double[] p)
-    {
-        double a0 = p[0], b = p[1], alpha = p[2];
-        
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        // 解析解: m_d(t) = a₀(1 - e^(-b(1-α)t)) / (1 - α)
-        double factor = 1 - alpha;
-        if (factor <= 0)
-            return a0;
-        
-        return a0 * (1 - Math.Exp(-b * factor * t)) / factor;
-    }
-    
-    public override double CalculateCorrected(double t, double[] p)
-    {
-        // エラー生成モデルでは修正数 = 検出数（完全除去を仮定）
-        return CalculateDetected(t, p);
-    }
-    
-    public override double CalculateRemaining(double t, double[] p)
-    {
-        double a0 = p[0], alpha = p[2];
-        double detected = CalculateDetected(t, p);
-        
-        // 残存 = 初期欠陥 + 導入欠陥 - 修正欠陥
-        // = a₀ + α·m_d - m_d = a₀ - (1-α)·m_d
-        return a0 - (1 - alpha) * detected;
-    }
-    
-    public override double GetFaultRemovalEfficiency(double t, double[] p)
-    {
-        return 1.0; // 検出された欠陥は全て修正される
-    }
-    
-    public override double[] GetInitialParameters(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        int n = tData.Length;
-
-        // a₀: 収束度合いに応じて 1.1〜1.5×maxY（導入分を考慮してやや控えめ）
-        double last = yData[^1];
-        double prev = n > 1 ? yData[^2] : yData[^1];
-        double increment = last - prev;
-        double a0 = increment <= 1.0 ? maxY * 1.1 : maxY * 1.5;
-
-        // b: 平均増分から指数型と同様に推定
-        double avgSlope = EstimateAverageSlope(yData);
-        double b0 = avgSlope switch
-        {
-            <= 0.1 => 0.05,
-            <= 0.5 => 0.1,
-            <= 1.0 => 0.2,
-            _ => 0.3
-        };
-
-        double alpha0 = 0.1;
-
-        return new[] { a0, b0, alpha0 };
-    }
-    
-    public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        return (
-            new[] { maxY, 0.001, 0.0 },
-            new[] { maxY * 3, 1.0, 0.5 }
-        );
-    }
-}
-
-/// <summary>
-/// FRE + エラー生成統合モデル
-/// 欠陥除去効率と欠陥導入を両方考慮
-/// </summary>
-public class FREErrorGenerationModel : FaultRemovalEfficiencyModelBase
-{
-    public override string Name => "FRE+エラー生成";
-    public override string Category => "欠陥除去効率+不完全";
-    public override string Formula => "m_c = η·m_d, a(t) = a₀ + α·m_d";
-    public override string Description => "除去効率と欠陥導入を統合";
-    public override string[] ParameterNames => new[] { "a₀", "b", "η", "α" };
-    
-    /// <summary>
-    /// 漸近的総欠陥数: a₀ / (1 - α)
-    /// </summary>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        double a0 = parameters[0];
-        double alpha = parameters[3];
-        
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        return a0 / (1 - alpha);
-    }
-    
-    public override double CalculateDetected(double t, double[] p)
-    {
-        double a0 = p[0], b = p[1], alpha = p[3];
-        
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        double factor = 1 - alpha;
-        if (factor <= 0)
-            return a0;
-        
-        return a0 * (1 - Math.Exp(-b * factor * t)) / factor;
-    }
-    
-    public override double CalculateCorrected(double t, double[] p)
-    {
-        double eta = p[2];
-        return eta * CalculateDetected(t, p);
-    }
-    
-    public override double CalculateRemaining(double t, double[] p)
-    {
-        double a0 = p[0], eta = p[2], alpha = p[3];
-        double detected = CalculateDetected(t, p);
-        
-        // 現在の潜在欠陥 = 初期 + 導入 - 修正
-        double totalBugs = a0 + alpha * detected;
-        double corrected = eta * detected;
-        return totalBugs - corrected;
-    }
-    
-    public override double GetFaultRemovalEfficiency(double t, double[] p)
-    {
-        return p[2]; // η
-    }
-    
-    public override double[] GetInitialParameters(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        int n = tData.Length;
-
-        // a₀: 収束度合いに応じて 1.2〜1.8×maxY
-        double last = yData[^1];
-        double prev = n > 1 ? yData[^2] : yData[^1];
-        double increment = last - prev;
-        double a0 = increment <= 1.0 ? maxY * 1.2 : maxY * 1.8;
-
-        // b: 平均増分から指数型と同様に推定
-        double avgSlope = EstimateAverageSlope(yData);
-        double b0 = avgSlope switch
-        {
-            <= 0.1 => 0.05,
-            <= 0.5 => 0.1,
-            <= 1.0 => 0.2,
-            _ => 0.3
-        };
-
-        double eta0 = 0.8;
-        double alpha0 = 0.1;
-
-        return new[] { a0, b0, eta0, alpha0 };
-    }
-    
-    public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        return (
-            new[] { maxY, 0.001, 0.3, 0.0 },
-            new[] { maxY * 3, 1.0, 1.0, 0.5 }
-        );
-    }
-}
-
-/// <summary>
 /// ロジスティック型FRF（欠陥削減係数）モデル
 /// FRF(t) = 1 / (1 + β·e^(-γt))
 /// </summary>
@@ -449,58 +252,27 @@ public class LogisticFRFModel : FaultRemovalEfficiencyModelBase
 }
 
 /// <summary>
-/// 統合モデル（FRE + エラー生成 + 変化点）
+/// FRE + 変化点モデル
+/// m_d(t) = a(1 - e^(-u(t)))、u(t) = b₁t（t ≤ τ）、b₁τ + b₂(t-τ)（t &gt; τ）
+/// m_c(t) = η·m_d(t)
 /// </summary>
-public class IntegratedFREModel : FaultRemovalEfficiencyModelBase
+/// <remarks>
+/// 以前の「統合FRE」（FRE + エラー生成 + 変化点）からバグ混入率 α を除いたもの。
+/// 定数 α のエラー生成モデルの解 a/(1-α)·(1-e^(-b(1-α)t)) は A(1-e^(-Bt))（A=a/(1-α), B=b(1-α)）と恒等的に等しく、
+/// 発見数・修正数のデータから α を推定できない（識別不能）ため。
+/// </remarks>
+public class FREChangePointModel : FaultRemovalEfficiencyModelBase
 {
-    public override string Name => "統合FRE";
-    public override string Category => "統合";
-    public override string Formula => "FRE + エラー生成 + 変化点";
-    public override string Description => "全要素を統合した高度モデル";
-    public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "η", "α", "τ" };
-    
-    /// <summary>
-    /// 漸近的総欠陥数: a / (1 - α)
-    /// </summary>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        double a = parameters[0];
-        double alpha = parameters[4];
-        
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        return a / (1 - alpha);
-    }
+    public override string Name => "FRE+変化点";
+    public override string Formula => "m_d = a(1-e^(-u(t))), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]; m_c = η·m_d";
+    public override string Description => "欠陥除去効率 η と検出率の変化点を組み合わせたモデル";
+    public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "η", "τ" };
     
     public override double CalculateDetected(double t, double[] p)
     {
-        double a = p[0], b1 = p[1], b2 = p[2], alpha = p[4], tau = p[5];
-        
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        double factor = 1 - alpha;
-        
-        if (t <= tau)
-        {
-            return a * (1 - Math.Exp(-b1 * factor * t)) / factor;
-        }
-        else
-        {
-            // 変化点での値
-            double m_tau = a * (1 - Math.Exp(-b1 * factor * tau)) / factor;
-            
-            // 変化点後
-            double remainingA = a + alpha * m_tau - m_tau * factor;
-            if (remainingA <= 0)
-                return m_tau;
-            
-            double dt = t - tau;
-            double increment = remainingA * (1 - Math.Exp(-b2 * factor * dt)) / factor;
-            
-            return m_tau + Math.Max(0, increment);
-        }
+        double a = p[0], b1 = p[1], b2 = p[2], tau = p[4];
+        double u = t <= tau ? b1 * t : b1 * tau + b2 * (t - tau);
+        return a * (1 - Math.Exp(-u));
     }
     
     public override double CalculateCorrected(double t, double[] p)
@@ -526,23 +298,14 @@ public class IntegratedFREModel : FaultRemovalEfficiencyModelBase
         double a0 = increment <= 1.0 ? maxY * 1.3 : maxY * 1.7;
 
         // b₁, b₂: 平均増分から指数型と同様に初期化し、まずは同じ値から開始
-        double avgSlope = EstimateAverageSlope(yData);
-        double b1 = avgSlope switch
-        {
-            <= 0.1 => 0.05,
-            <= 0.5 => 0.1,
-            <= 1.0 => 0.2,
-            _ => 0.3
-        };
-        double b2 = b1;
+        double b0 = GetBValueExponential(EstimateAverageSlope(yData));
 
         double eta0 = 0.8;
-        double alpha0 = 0.1;
 
         // τ: 累積50%到達日を変化点候補に
         double tau0 = FindDayForCumulativeRatio(yData, 0.5);
 
-        return new[] { a0, b1, b2, eta0, alpha0, tau0 };
+        return new[] { a0, b0, b0, eta0, tau0 };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -550,8 +313,8 @@ public class IntegratedFREModel : FaultRemovalEfficiencyModelBase
         double maxY = yData.Max();
         int n = tData.Length;
         return (
-            new[] { maxY, 0.001, 0.001, 0.3, 0.0, 2.0 },
-            new[] { maxY * 5, 1.0, 1.0, 1.0, 0.5, n - 2.0 }
+            new[] { maxY, 0.001, 0.001, 0.3, 2.0 },
+            new[] { maxY * 5, 1.0, 1.0, 1.0, n - 2.0 }
         );
     }
 }
@@ -565,16 +328,13 @@ public static class FREModelFactory
     {
         yield return new ConstantFREModel();
         yield return new LearningFREModel();
-        yield return new ErrorGenerationModel();
-        yield return new FREErrorGenerationModel();
         yield return new LogisticFRFModel();
-        yield return new IntegratedFREModel();
+        yield return new FREChangePointModel();
     }
     
     public static IEnumerable<ReliabilityGrowthModelBase> GetBasicFREModels()
     {
         yield return new ConstantFREModel();
-        yield return new ErrorGenerationModel();
-        yield return new FREErrorGenerationModel();
+        yield return new LearningFREModel();
     }
 }

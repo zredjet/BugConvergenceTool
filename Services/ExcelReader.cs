@@ -39,12 +39,26 @@ public class ExcelReader
         {
             col++;
         }
-        int dataCount = col - 2;
+        int dateCount = col - 2;
+        
+        // 観測期間 = バグ発生（行9）が入力されている最後の日まで。
+        // 予定消化だけを先の日付まで入力したシートで、未来の日を「バグ 0 件の観測日」として読まないようにする
+        int dataCount = 0;
+        for (int i = 0; i < dateCount; i++)
+        {
+            if (!IsBlank(worksheet.Cell(9, i + 2)))
+                dataCount = i + 1;
+        }
+        if (dataCount < dateCount)
+        {
+            data.Warnings.Add($"バグ発生数が未入力の末尾 {dateCount - dataCount} 日分（予定のみの日付）は観測期間に含めていません。");
+        }
         
         if (dataCount < 3)
-            throw new InvalidOperationException($"データが不足しています。最低3日分のデータが必要です。（現在: {dataCount}日分）");
+            throw new InvalidOperationException($"データが不足しています。最低3日分のデータが必要です。（バグ発生数が入力された日: {dataCount}日分）");
         
         // データの読み込み
+        var blankFoundDays = new List<DateTime>();
         for (int i = 0; i < dataCount; i++)
         {
             int currentCol = i + 2; // B列から開始
@@ -67,14 +81,42 @@ public class ExcelReader
             // 実績消化数（日次） - 行8
             data.ActualDaily.Add(GetCellValue(worksheet, 8, currentCol));
             
-            // バグ発生件数（日次） - 行9
+            // バグ発生件数（日次） - 行9（観測期間内の空欄は 0 件として扱い、注意を出す）
+            if (IsBlank(worksheet.Cell(9, currentCol)))
+                blankFoundDays.Add(data.Dates[^1]);
             data.BugsFoundDaily.Add(GetCellValue(worksheet, 9, currentCol));
             
             // バグ修正件数（日次） - 行10
             data.BugsFixedDaily.Add(GetCellValue(worksheet, 10, currentCol));
         }
         
+        if (blankFoundDays.Count > 0)
+        {
+            data.Warnings.Add($"観測期間内でバグ発生数が空欄の {blankFoundDays.Count} 日（{string.Join(", ", blankFoundDays.Take(5).Select(d => d.ToString("MM/dd")))}{(blankFoundDays.Count > 5 ? " など" : "")}）を 0 件として扱いました。");
+        }
+        if (data.UsesBusinessDays)
+        {
+            data.Warnings.Add("観測日に土日が含まれないため、予測日付は土日を除いた営業日で数えます（祝日は考慮しません）。");
+        }
+        
         return data;
+    }
+    
+    /// <summary>
+    /// 未入力のセルか（空のセルに加え、`=IF(...,"")` のように空文字を返す数式セルも未入力とみなす）
+    /// </summary>
+    private static bool IsBlank(IXLCell cell)
+    {
+        if (cell.IsEmpty()) return true;
+        try
+        {
+            return string.IsNullOrWhiteSpace(cell.GetString());
+        }
+        catch
+        {
+            // 評価できない数式は入力ありとして扱う（値は GetCellValue で 0 になる）
+            return false;
+        }
     }
     
     private double GetCellValue(IXLWorksheet worksheet, int row, int col)

@@ -68,6 +68,22 @@ public class ExcelWriter
         }
     }
     
+    /// <summary>
+    /// 発見率の欄の値（b がないモデルは変化点前の b₁。どちらもなければ "-"）
+    /// </summary>
+    /// <remarks>
+    /// 以前は Parameters["b"] を既定値 0 で読んでいたため、変化点モデルなどでは b=0 と表示されていた。
+    /// </remarks>
+    private static XLCellValue DetectionRateCell(FittingResult result)
+    {
+        foreach (var name in new[] { "b", "b₁", "b1" })
+        {
+            if (result.Parameters.TryGetValue(name, out double value))
+                return value;
+        }
+        return "-";
+    }
+    
     private void WriteModelSheet(XLWorkbook workbook, List<FittingResult> results, FittingResult bestResult)
     {
         var ws = workbook.Worksheet("モデル選択");
@@ -75,11 +91,10 @@ public class ExcelWriter
         // 選択モデルの結果
         ws.Cell("B14").Value = bestResult.ModelName;
         ws.Cell("B15").Value = bestResult.Parameters.GetValueOrDefault("a", 0);
-        ws.Cell("B16").Value = bestResult.Parameters.GetValueOrDefault("b", 0);
+        ws.Cell("B16").Value = DetectionRateCell(bestResult);
         ws.Cell("B17").Value = bestResult.Parameters.ContainsKey("c") 
             ? bestResult.Parameters["c"].ToString("F4") : "-";
-        ws.Cell("B18").Value = bestResult.ImperfectDebugRate.HasValue 
-            ? $"{bestResult.ImperfectDebugRate.Value * 100:F1}%" : "-";
+        ws.Cell("B18").Value = "-";  // 旧「不完全デバッグ率」欄（該当モデルは削除済み）
         
         // 適合度指標
         ws.Cell("B20").Value = bestResult.R2;
@@ -88,7 +103,7 @@ public class ExcelWriter
         
         // 推定結果
         ws.Cell("B25").Value = bestResult.EstimatedTotalBugs;
-        ws.Cell("B26").Value = bestResult.Parameters.GetValueOrDefault("b", 0);
+        ws.Cell("B26").Value = DetectionRateCell(bestResult);
         ws.Cell("B27").Value = bestResult.EstimatedTotalBugs - _testData.CurrentCumulativeBugs;
         
         // モデル比較結果（行30から）
@@ -98,10 +113,10 @@ public class ExcelWriter
         
         // ヘッダー
         // ヘッダー（ホールドアウト検証の列を追加）
-        var hasHoldout = results.Any(r => r.HoldoutMse.HasValue);
+        var hasHoldout = results.Any(r => r.Holdout != null);
         var headers = hasHoldout 
-            ? new[] { "モデル名", "カテゴリ", "R²", "MSE", "AIC", "潜在バグ数", "不完全デバッグ率", "Holdout_MSE", "Holdout_MAPE(%)", "損失関数", "95%発見日", "99%発見日" }
-            : new[] { "モデル名", "カテゴリ", "R²", "MSE", "AIC", "潜在バグ数", "不完全デバッグ率", "95%発見日", "99%発見日" };
+            ? new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "HO予測発見数", "HO実測発見数", "HO誤差(%)", "HO日次MAE", "損失関数", "95%発見日", "99%発見日" }
+            : new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "95%発見日", "99%発見日" };
         for (int i = 0; i < headers.Length; i++)
         {
             var cell = ws.Cell(startRow + 1, i + 1);
@@ -113,23 +128,31 @@ public class ExcelWriter
         
         // データ
         int row = startRow + 2;
-        foreach (var result in results.Where(r => r.Success && !r.ModelSelectionCriterion.StartsWith("Invalid")).OrderBy(r => r.SelectionScore))
+        // AIC は比較グループ内でのみ比較可能なため、グループ順・グループ内の選択基準値順に並べる
+        var ranked = ModelComparisonGroup.GroupAndRank(results)
+            .SelectMany(g => g.Results.Select(r => (Result: r, Delta: r.SelectionScore - g.Results[0].SelectionScore)));
+        foreach (var (result, delta) in ranked)
         {
             int col = 1;
             ws.Cell(row, col++).Value = result.ModelName;
             ws.Cell(row, col++).Value = result.Category;
+            ws.Cell(row, col++).Value = result.ComparisonGroup;
             ws.Cell(row, col++).Value = result.R2;
             ws.Cell(row, col++).Value = result.MSE;
             ws.Cell(row, col++).Value = result.AIC;
+            ws.Cell(row, col++).Value = result.AICc;
+            ws.Cell(row, col++).Value = result.ModelSelectionCriterion;
+            ws.Cell(row, col++).Value = delta;
             ws.Cell(row, col++).Value = result.EstimatedTotalBugs;
-            ws.Cell(row, col++).Value = result.ImperfectDebugRate.HasValue 
-                ? $"{result.ImperfectDebugRate.Value * 100:F1}%" : "-";
             
             // ホールドアウト検証結果
             if (hasHoldout)
             {
-                ws.Cell(row, col++).Value = result.HoldoutMse.HasValue ? result.HoldoutMse.Value : "-";
-                ws.Cell(row, col++).Value = result.HoldoutMape.HasValue ? $"{result.HoldoutMape.Value:F2}" : "-";
+                var h = result.Holdout;
+                ws.Cell(row, col++).Value = h != null ? h.PredictedIncrement : "-";
+                ws.Cell(row, col++).Value = h != null ? h.ActualIncrement : "-";
+                ws.Cell(row, col++).Value = result.HoldoutIncrementErrorPercent.HasValue ? result.HoldoutIncrementErrorPercent.Value : "-";
+                ws.Cell(row, col++).Value = h != null ? h.DailyMae : "-";
                 ws.Cell(row, col++).Value = result.LossFunctionUsed;
             }
             
@@ -154,11 +177,6 @@ public class ExcelWriter
             {
                 ws.Range(row, 1, row, maxCol).Style.Fill.BackgroundColor = XLColor.LightGreen;
             }
-            // 不完全デバッグモデルを別色
-            else if (result.Category == "不完全デバッグ")
-            {
-                ws.Range(row, 1, row, maxCol).Style.Fill.BackgroundColor = XLColor.FromHtml("#FFE4B5");
-            }
             
             row++;
         }
@@ -169,7 +187,8 @@ public class ExcelWriter
         ws.Cell(convRow, 1).Style.Font.Bold = true;
         
         ws.Cell(convRow + 1, 1).Value = "現在の発見率";
-        ws.Cell(convRow + 1, 2).Value = $"{_testData.CurrentCumulativeBugs / bestResult.EstimatedTotalBugs * 100:F1}%";
+        ws.Cell(convRow + 1, 2).Value = ConvergenceAssessment.FormatRatio(
+            ConvergenceAssessment.Evaluate(_testData.CurrentCumulativeBugs, bestResult.EstimatedTotalBugs).Ratio);
         
         ws.Cell(convRow + 3, 1).Value = "マイルストーン";
         ws.Cell(convRow + 3, 2).Value = "予測日数";
@@ -221,15 +240,10 @@ public class ExcelWriter
         ws.Range(1, 1, 1, 5).Style.Fill.BackgroundColor = XLColor.FromHtml("#4472C4");
         ws.Range(1, 1, 1, 5).Style.Font.FontColor = XLColor.White;
 
-        // モデル取得（全拡張モデルから検索）
-        var allModels = ModelFactory.GetAllExtendedModels(
-            includeChangePoint: true,
-            includeTEF: true,
-            includeFRE: true,
-            includeCoverage: true);
-        var model = allModels.FirstOrDefault(m => m.Name == bestResult.ModelName)
-            ?? ModelFactory.GetAllModels().First(m => m.Name == bestResult.ModelName);
-        var parameters = bestResult.Parameters.Values.ToArray();
+        // 推定に使ったモデルのインスタンスとパラメータ列（順序を保持）
+        var model = bestResult.Model
+            ?? throw new InvalidOperationException($"{bestResult.ModelName} のモデルインスタンスがありません");
+        var parameters = bestResult.ParameterVector;
         var actualBugs = _testData.GetCumulativeBugsFound();
         
         for (int i = 1; i <= predDays; i++)

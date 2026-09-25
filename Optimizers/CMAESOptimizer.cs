@@ -299,7 +299,10 @@ public class CMAESOptimizer : IOptimizer
                 {
                     stagnationCount++;
                     if (stagnationCount > 50)
+                    {
+                        result.Converged = true;
                         break;
+                    }
                 }
                 else
                 {
@@ -309,7 +312,10 @@ public class CMAESOptimizer : IOptimizer
                 
                 // σ_u が極小になったら終了
                 if (sigma_u < 1e-8)
+                {
+                    result.Converged = true;
                     break;
+                }
                 
                 result.Iterations = iter + 1;
             }
@@ -317,7 +323,7 @@ public class CMAESOptimizer : IOptimizer
             result.Parameters = bestX;
             result.ObjectiveValue = bestFitness;
             result.FunctionEvaluations = evaluations;
-            result.Success = !double.IsNaN(bestFitness) && !double.IsInfinity(bestFitness);
+            result.Success = OptimizationResult.IsValidObjective(bestFitness);
         }
         catch (Exception ex)
         {

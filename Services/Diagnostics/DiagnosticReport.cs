@@ -19,6 +19,11 @@ public class DiagnosticReport
     /// <summary>正規性検定結果</summary>
     public NormalityTestResult? NormalityTest { get; init; }
     
+    /// <summary>
+    /// Poisson 整合性診断（過分散検定・ランダム化分位残差）
+    /// </summary>
+    public PoissonConsistentAnalysisResult? PoissonDiagnostics { get; init; }
+    
     /// <summary>診断の総合評価スコア（0-100）</summary>
     public int OverallScore { get; init; }
     
@@ -106,21 +111,35 @@ public class DiagnosticReportGenerator
         if (!string.IsNullOrEmpty(autocorrelationResult.SmallSampleWarning))
             warnings.Add(autocorrelationResult.SmallSampleWarning);
         
-        // 3. 正規性検定
-        var normalityResult = _normalityTest.Test(residualResult.Residuals);
+        // 3. Poisson 整合性診断（NHPP の仮定: 日次発見数の分散 = 期待値 を検定）
+        PoissonConsistentAnalysisResult? poissonResult = null;
+        try
+        {
+            poissonResult = _residualAnalyzer.AnalyzeWithPoissonDiagnostics(model, tData, yData, parameters);
+            warnings.AddRange(poissonResult.Warnings);
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"Poisson整合性診断に失敗しました: {ex.Message}");
+        }
         
+        // 4. 正規性検定
+        // 日次発見数は離散（期待値が小さいことが多い）ため、Pearson 残差は正しいモデルでも正規分布に従わず、
+        // 正規性検定が棄却されやすい。モデルが正しければ厳密に標準正規分布に従うランダム化分位残差で検定する
+        var normalityResiduals = poissonResult?.GetResidualsForNormalityTest() is { Length: > 0 } rqr ? rqr : residualResult.Residuals;
+        var normalityResult = _normalityTest.Test(normalityResiduals);
         if (!string.IsNullOrEmpty(normalityResult.SmallSampleWarning))
             warnings.Add(normalityResult.SmallSampleWarning);
         
-        // 4. 総合評価を計算
+        // 5. 総合評価を計算
         var (score, grade) = CalculateOverallScore(
             residualResult, autocorrelationResult, normalityResult);
         
-        // 5. 推奨事項を生成
+        // 6. 推奨事項を生成
         recommendations.AddRange(GenerateRecommendations(
             residualResult, autocorrelationResult, normalityResult, grade));
         
-        // 6. 総合評価文を生成
+        // 7. 総合評価文を生成
         string assessment = GenerateAssessment(grade, score, model.Name);
         
         return new DiagnosticReport
@@ -129,6 +148,7 @@ public class DiagnosticReportGenerator
             ResidualAnalysis = residualResult,
             AutocorrelationTest = autocorrelationResult,
             NormalityTest = normalityResult,
+            PoissonDiagnostics = poissonResult,
             OverallScore = score,
             OverallGrade = grade,
             OverallAssessment = assessment,
@@ -399,13 +419,35 @@ public class DiagnosticReportGenerator
         {
             var n = report.NormalityTest;
             sb.AppendLine("─────────────────────────────────────────────────────────────────");
-            sb.AppendLine("  正規性検定");
+            sb.AppendLine("  正規性検定（ランダム化分位残差）");
             sb.AppendLine("─────────────────────────────────────────────────────────────────");
             sb.AppendLine($"  Jarque-Bera: {n.JarqueBeraStatistic:F4} (p={n.JarqueBeraPValue:F4})");
             sb.AppendLine($"  Anderson-Darling: {n.AndersonDarlingStatistic:F4} (p={n.AndersonDarlingPValue:F4})");
             sb.AppendLine($"  歪度: {n.Skewness:F4}");
             sb.AppendLine($"  超過尖度: {n.ExcessKurtosis:F4}");
             sb.AppendLine($"  判定: {(n.IsNormalityRejected ? "⚠ 正規性棄却" : "✓ 正規性維持")}");
+            sb.AppendLine();
+        }
+        
+        // Poisson 整合性診断
+        if (report.PoissonDiagnostics != null)
+        {
+            var p = report.PoissonDiagnostics;
+            var od = p.OverdispersionTest;
+            var rqr = p.RandomizedQuantileResiduals;
+            sb.AppendLine("─────────────────────────────────────────────────────────────────");
+            sb.AppendLine("  Poisson整合性診断（NHPP の仮定: 日次発見数の分散 = 期待値）");
+            sb.AppendLine("─────────────────────────────────────────────────────────────────");
+            sb.AppendLine($"  過分散検定: 分散比 φ = {od.DispersionParameter:F3}（χ²={od.PearsonChiSquare:F2}, df={od.DegreesOfFreedom}, p={od.PValue:F4}）");
+            sb.AppendLine($"    → {od.Interpretation}");
+            if (rqr.Length > 0)
+            {
+                double mean = rqr.Average();
+                double sd = Math.Sqrt(rqr.Select(v => (v - mean) * (v - mean)).Sum() / Math.Max(1, rqr.Length - 1));
+                sb.AppendLine($"  ランダム化分位残差（Dunn & Smyth 1996）: 平均={mean:F3}, 標準偏差={sd:F3}");
+                sb.AppendLine("    （モデルが正しければ標準正規分布に従う。平均≈0、標準偏差≈1 が目安）");
+            }
+            sb.AppendLine($"  判定: {(od.IsOverdispersed ? "⚠ 過分散あり（信頼区間・予測区間が狭すぎる可能性）" : "✓ Poisson の仮定と矛盾しない")}");
             sb.AppendLine();
         }
         

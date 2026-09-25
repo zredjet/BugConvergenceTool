@@ -8,12 +8,16 @@ namespace BugConvergenceTool.Services;
 public enum LossType
 {
     /// <summary>
-    /// 残差二乗和（Sum of Squared Errors）- デフォルト
+    /// 残差二乗和（Sum of Squared Errors）
     /// </summary>
+    /// <remarks>
+    /// 累積値の残差は強く自己相関するため、SSE ベースの AIC はパラメータの多いモデルを過大に有利にする。
+    /// 従来結果との比較用に残している。
+    /// </remarks>
     Sse,
     
     /// <summary>
-    /// 最尤推定（Maximum Likelihood Estimation）- Poisson-NHPP
+    /// 最尤推定（Maximum Likelihood Estimation）- Poisson-NHPP（デフォルト）
     /// </summary>
     Mle
 }

@@ -45,6 +45,12 @@ public class GoodnessOfFitResult
     
     /// <summary>サンプルサイズが小さい場合の警告</summary>
     public string? SmallSampleWarning { get; init; }
+    
+    /// <summary>
+    /// KS・CvM 検定の p 値の求め方（"パラメトリック・ブートストラップ（N回）" または
+    /// "漸近分布（パラメータ既知を仮定、保守的）"）
+    /// </summary>
+    public string EdfPValueMethod { get; init; } = "";
 }
 
 /// <summary>
@@ -101,8 +107,10 @@ public class GoodnessOfFitTest
             }
         }
         
-        // 自由度 = ビン数 - 1 - パラメータ数
-        int df = Math.Max(1, binResults.Count - 1 - parameters.Length);
+        // 自由度 = ビン数 - パラメータ数
+        // 各ビンの件数は独立な Poisson 変数で合計は固定されていない（多項分布ではない）ため、
+        // 合計の制約による -1 は不要（以前は -1 しており、自由度が 1 少なかった）
+        int df = Math.Max(1, binResults.Count - parameters.Length);
         
         // p値
         double pValue = 1.0 - MathNet.Numerics.Distributions.ChiSquared.CDF(df, chiSquare);
@@ -177,61 +185,59 @@ public class GoodnessOfFitTest
     }
 
     /// <summary>
-    /// Kolmogorov-Smirnov検定（変換時間ベース）
-    /// NHPPの場合、累積強度関数で変換した時間が一様分布に従う
+    /// Kolmogorov-Smirnov 検定（発見時刻を U = m(t)/m(T) で変換した値が一様分布に従うか）
     /// </summary>
-    /// <param name="model">信頼度成長モデル</param>
-    /// <param name="tData">時刻データ</param>
-    /// <param name="yData">累積バグ発見数</param>
-    /// <param name="parameters">モデルパラメータ</param>
-    /// <returns>(D統計量, p値)</returns>
     public (double statistic, double pValue) KolmogorovSmirnovTest(
         ReliabilityGrowthModelBase model,
         double[] tData,
         double[] yData,
         double[] parameters)
     {
-        // 累積強度関数 M(t) = m(t) で変換
-        // バグ発生時刻を抽出し、U_i = M(t_i) / M(T) が一様(0,1)に従う
-        
-        var bugTimes = ExtractBugOccurrenceTimes(tData, yData);
-        int n = bugTimes.Length;
-        
-        if (n < 5)
+        var u = TransformedBugTimes(model, tData, yData, parameters);
+        if (u == null)
             return (0, 1.0);  // サンプル不足
         
+        double maxD = KolmogorovSmirnovStatistic(u);
+        return (maxD, CalculateKsPValue(maxD, u.Length));
+    }
+    
+    /// <summary>
+    /// 発見時刻を U = m(t)/m(T) で変換して昇順に並べた値（件数が 5 未満、または m(T) ≤ 0 なら null）
+    /// </summary>
+    private static double[]? TransformedBugTimes(
+        ReliabilityGrowthModelBase model, double[] tData, double[] yData, double[] parameters)
+    {
+        var bugTimes = ExtractBugOccurrenceTimes(tData, yData);
+        if (bugTimes.Length < 5)
+            return null;
+        
         double totalIntensity = model.Calculate(tData[^1], parameters);
-        
         if (totalIntensity <= 0)
-            return (0, 1.0);
+            return null;
         
-        // 変換時間 U_i = M(t_i) / M(T)
-        var transformedTimes = bugTimes
+        return bugTimes
             .Select(t => model.Calculate(t, parameters) / totalIntensity)
             .OrderBy(u => u)
             .ToArray();
-        
-        // KS統計量 D = max |F_n(x) - F(x)|
+    }
+    
+    /// <summary>
+    /// KS 統計量 D = max |Fₙ(u) - u|（U は昇順）
+    /// </summary>
+    private static double KolmogorovSmirnovStatistic(double[] sortedUniform)
+    {
+        int n = sortedUniform.Length;
         double maxD = 0;
         for (int i = 0; i < n; i++)
         {
-            double empiricalCdf = (i + 1.0) / n;
-            double theoreticalCdf = transformedTimes[i];
-            
-            // D+ = max(F_n - F)
-            double d1 = Math.Abs(empiricalCdf - theoreticalCdf);
-            // D- = max(F - F_{n-1})
+            double theoreticalCdf = sortedUniform[i];
+            double d1 = Math.Abs((i + 1.0) / n - theoreticalCdf);
             double d2 = Math.Abs((double)i / n - theoreticalCdf);
-            
             maxD = Math.Max(maxD, Math.Max(d1, d2));
         }
-        
-        // p値の計算（Kolmogorov分布の漸近近似）
-        double pValue = CalculateKsPValue(maxD, n);
-        
-        return (maxD, pValue);
+        return maxD;
     }
-
+    
     /// <summary>
     /// KS検定のp値を計算（Kolmogorov分布の近似）
     /// </summary>
@@ -256,73 +262,78 @@ public class GoodnessOfFitTest
     }
 
     /// <summary>
-    /// Cramer-von Mises検定（変換時間ベース）
-    /// KS検定より検出力が高い場合がある
+    /// Cramér-von Mises 検定（発見時刻を U = m(t)/m(T) で変換した値が一様分布に従うか）
     /// </summary>
-    /// <param name="model">信頼度成長モデル</param>
-    /// <param name="tData">時刻データ</param>
-    /// <param name="yData">累積バグ発見数</param>
-    /// <param name="parameters">モデルパラメータ</param>
-    /// <returns>(W²統計量, p値)</returns>
     public (double statistic, double pValue) CramerVonMisesTest(
         ReliabilityGrowthModelBase model,
         double[] tData,
         double[] yData,
         double[] parameters)
     {
-        var bugTimes = ExtractBugOccurrenceTimes(tData, yData);
-        int n = bugTimes.Length;
-        
-        if (n < 5)
+        var u = TransformedBugTimes(model, tData, yData, parameters);
+        if (u == null)
             return (0, 1.0);
         
-        double totalIntensity = model.Calculate(tData[^1], parameters);
-        
-        if (totalIntensity <= 0)
-            return (0, 1.0);
-        
-        // 変換時間
-        var transformedTimes = bugTimes
-            .Select(t => model.Calculate(t, parameters) / totalIntensity)
-            .OrderBy(u => u)
-            .ToArray();
-        
-        // Cramer-von Mises統計量
-        // W² = 1/(12n) + Σ[(U_i - (2i-1)/(2n))²]
+        // p値: 変換後の値が一様分布に従う（分布が完全に指定された Case 0）ときの W² の分布から求める
+        double W2 = CramerVonMisesStatistic(u);
+        return (W2, CalculateCvMPValue(W2, u.Length));
+    }
+    
+    /// <summary>
+    /// Cramér-von Mises 統計量 W² = 1/(12n) + Σ(U₍ᵢ₎ - (2i-1)/(2n))²（U は昇順）
+    /// </summary>
+    private static double CramerVonMisesStatistic(double[] sortedUniform)
+    {
+        int n = sortedUniform.Length;
         double sum = 0;
         for (int i = 0; i < n; i++)
         {
-            double diff = transformedTimes[i] - (2.0 * (i + 1) - 1) / (2.0 * n);
+            double diff = sortedUniform[i] - (2.0 * (i + 1) - 1) / (2.0 * n);
             sum += diff * diff;
         }
-        
-        double W2 = 1.0 / (12 * n) + sum;
-        
-        // 修正統計量 (Stephens, 1974)
-        double W2Star = W2 * (1 + 0.5 / n);
-        
-        // p値の近似
-        double pValue = CalculateCvMPValue(W2Star);
-        
-        return (W2Star, pValue);
+        return 1.0 / (12 * n) + sum;
     }
-
+    
+    private const int CvMSimulations = 10000;
+    // Lazy で包み、並列に同じ n が要求されても帰無分布の生成は1回にする
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, Lazy<double[]>> CvMNullDistributions = new();
+    
     /// <summary>
-    /// Cramer-von Mises検定のp値を計算
+    /// Cramér-von Mises 検定の p 値（Case 0: 分布が完全に指定されている場合）
     /// </summary>
-    private static double CalculateCvMPValue(double W2)
+    /// <remarks>
+    /// <para>
+    /// n 個の一様乱数から W² の帰無分布をシミュレーション（固定シード、n ごとにキャッシュ）して求める。有限の n でも正確。
+    /// </para>
+    /// <para>
+    /// 以前は Stephens (1974) の「正規分布のパラメータを推定した場合（Case 3）」用の修正統計量と近似式を使っており、
+    /// 正しいモデル・真のパラメータでも約半数が棄却されていた。
+    /// なお本ツールではモデルのパラメータをデータから推定しているため、この p 値は KS 検定と同様にやや大きめ（保守的）になる。
+    /// </para>
+    /// </remarks>
+    private static double CalculateCvMPValue(double W2, int n)
     {
-        // Stephens (1974) の近似
-        if (W2 < 0.0275)
-            return 1.0 - Math.Exp(-13.953 + 775.5 * W2 - 12542.6 * W2 * W2);
-        else if (W2 < 0.051)
-            return 1.0 - Math.Exp(-5.903 + 179.5 * W2 - 1515.3 * W2 * W2);
-        else if (W2 < 0.092)
-            return Math.Exp(0.886 - 31.62 * W2 + 10.89 * W2 * W2);
-        else if (W2 < 1.1)
-            return Math.Exp(1.111 - 34.24 * W2 + 12.83 * W2 * W2);
-        else
-            return 0.0001;
+        var nullDistribution = CvMNullDistributions.GetOrAdd(n, size => new Lazy<double[]>(() =>
+        {
+            var random = new Random(20240601 + size);
+            var sample = new double[size];
+            var statistics = new double[CvMSimulations];
+            for (int s = 0; s < CvMSimulations; s++)
+            {
+                for (int i = 0; i < size; i++) sample[i] = random.NextDouble();
+                Array.Sort(sample);
+                statistics[s] = CramerVonMisesStatistic(sample);
+            }
+            Array.Sort(statistics);
+            return statistics;
+        })).Value;
+        
+        // 観測値以上になった割合（+1 補正）
+        int index = Array.BinarySearch(nullDistribution, W2);
+        if (index < 0) index = ~index;
+        while (index > 0 && nullDistribution[index - 1] >= W2) index--;
+        int exceed = nullDistribution.Length - index;
+        return (exceed + 1.0) / (nullDistribution.Length + 1.0);
     }
 
     /// <summary>
@@ -364,11 +375,24 @@ public class GoodnessOfFitTest
     /// <param name="yData">累積バグ発見数</param>
     /// <param name="parameters">モデルパラメータ</param>
     /// <returns>適合度検定結果</returns>
+    /// <summary>
+    /// 適合度検定を実行
+    /// </summary>
+    /// <param name="refit">
+    /// 累積データからパラメータを推定し直す関数。指定すると KS・CvM 検定の p 値をパラメトリック・ブートストラップで求める。
+    /// パラメータをデータから推定している場合、分布が完全に指定された場合の p 値は極端に保守的になり
+    /// （正しいモデルの合成データで 5% 棄却率が 0%）、検定として機能しないため。
+    /// </param>
+    /// <param name="bootstrapIterations">ブートストラップの反復回数</param>
+    /// <param name="seed">乱数シード</param>
     public GoodnessOfFitResult Test(
         ReliabilityGrowthModelBase model,
         double[] tData,
         double[] yData,
-        double[] parameters)
+        double[] parameters,
+        Func<double[], double[]?>? refit = null,
+        int bootstrapIterations = 199,
+        int? seed = 12345)
     {
         int n = tData.Length;
         
@@ -391,6 +415,18 @@ public class GoodnessOfFitTest
         
         // Cramer-von Mises検定
         var (cvm, cvmPValue) = CramerVonMisesTest(model, tData, yData, parameters);
+        
+        // パラメータ推定の影響を反映した p 値（パラメトリック・ブートストラップ）
+        string edfMethod = "漸近分布（パラメータ既知を仮定。推定している場合は保守的）";
+        if (refit != null)
+        {
+            var bootstrap = BootstrapEdfPValues(model, tData, parameters, ks, cvm, refit, bootstrapIterations, seed);
+            if (bootstrap.HasValue)
+            {
+                (ksPValue, cvmPValue) = (bootstrap.Value.ksPValue, bootstrap.Value.cvmPValue);
+                edfMethod = $"パラメトリック・ブートストラップ（{bootstrap.Value.valid}回）";
+            }
+        }
         
         // 解釈を生成
         string chi2Interpretation = InterpretChiSquare(chi2PValue);
@@ -415,10 +451,51 @@ public class GoodnessOfFitTest
             CramerVonMisesPValue = cvmPValue,
             OverallAssessment = assessment,
             IsModelAdequate = isAdequate,
-            SmallSampleWarning = smallSampleWarning
+            SmallSampleWarning = smallSampleWarning,
+            EdfPValueMethod = edfMethod
         };
     }
 
+    /// <summary>
+    /// KS・CvM 統計量の帰無分布をパラメトリック・ブートストラップで求め、p 値を返す
+    /// </summary>
+    /// <remarks>
+    /// θ̂ から発見数を Poisson 再生成し、推定し直した θ* で統計量を計算する（パラメータ推定の影響を含む）。
+    /// p = (観測値以上の数 + 1) / (有効な反復数 + 1)。有効な反復が半数未満なら null。
+    /// </remarks>
+    private (double ksPValue, double cvmPValue, int valid)? BootstrapEdfPValues(
+        ReliabilityGrowthModelBase model, double[] tData, double[] parameters,
+        double observedKs, double observedCvm, Func<double[], double[]?> refit, int iterations, int? seed)
+    {
+        int ksExceed = 0, cvmExceed = 0, valid = 0;
+        int baseSeed = seed ?? Random.Shared.Next();
+        Parallel.For(0, iterations, iter =>
+        {
+            try
+            {
+                var simY = ParametricBootstrap.SimulateCumulative(model, tData, parameters, new Random(unchecked(baseSeed + iter * 7919)));
+                var p = refit(simY);
+                if (p == null) return;
+                // 統計量だけを計算する（p 値は観測値について1回求めれば足り、ここで求めると
+                // 反復ごとに異なる件数の帰無分布をシミュレーションしてしまう）
+                var u = TransformedBugTimes(model, tData, simY, p);
+                if (u == null) return;
+                double ks = KolmogorovSmirnovStatistic(u);
+                double cvm = CramerVonMisesStatistic(u);
+                Interlocked.Increment(ref valid);
+                if (ks >= observedKs) Interlocked.Increment(ref ksExceed);
+                if (cvm >= observedCvm) Interlocked.Increment(ref cvmExceed);
+            }
+            catch
+            {
+                // 失敗した反復は数えない
+            }
+        });
+        
+        if (valid < iterations / 2) return null;
+        return ((ksExceed + 1.0) / (valid + 1.0), (cvmExceed + 1.0) / (valid + 1.0), valid);
+    }
+    
     /// <summary>
     /// χ²検定の解釈
     /// </summary>

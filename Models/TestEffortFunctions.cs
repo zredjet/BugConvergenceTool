@@ -28,6 +28,11 @@ public interface ITestEffortFunction
     double CalculateRate(double t, double[] parameters);
     
     /// <summary>
+    /// 総テスト工数 W(∞) を計算（無限工数関数の場合は +∞）
+    /// </summary>
+    double CalculateTotalEffort(double[] parameters);
+    
+    /// <summary>
     /// 初期パラメータ推定値を取得
     /// </summary>
     double[] GetInitialParameters(double[] tData, double[] effortData);
@@ -61,6 +66,8 @@ public class ExponentialTEF : ITestEffortFunction
         double N = p[0], beta = p[1];
         return N * beta * Math.Exp(-beta * t);
     }
+    
+    public double CalculateTotalEffort(double[] p) => p[0]; // N
     
     public double[] GetInitialParameters(double[] tData, double[] effortData)
     {
@@ -103,6 +110,8 @@ public class RayleighTEF : ITestEffortFunction
         double ratio = t / beta;
         return (2 * N * t / (beta * beta)) * Math.Exp(-ratio * ratio);
     }
+    
+    public double CalculateTotalEffort(double[] p) => p[0]; // N
     
     public double[] GetInitialParameters(double[] tData, double[] effortData)
     {
@@ -148,6 +157,8 @@ public class WeibullTEF : ITestEffortFunction
         return (N * m / beta) * Math.Pow(ratio, m - 1) * Math.Exp(-Math.Pow(ratio, m));
     }
     
+    public double CalculateTotalEffort(double[] p) => p[0]; // N
+    
     public double[] GetInitialParameters(double[] tData, double[] effortData)
     {
         double maxEffort = effortData.Max();
@@ -192,6 +203,8 @@ public class LogisticTEF : ITestEffortFunction
         return (N * A * alpha * expTerm) / (denom * denom);
     }
     
+    public double CalculateTotalEffort(double[] p) => p[0]; // N
+    
     public double[] GetInitialParameters(double[] tData, double[] effortData)
     {
         double maxEffort = effortData.Max();
@@ -232,6 +245,8 @@ public class LogPowerTEF : ITestEffortFunction
         double tb = Math.Pow(t, b);
         return (a * b * Math.Pow(t, b - 1)) / (1 + tb);
     }
+    
+    public double CalculateTotalEffort(double[] p) => double.PositiveInfinity;
     
     public double[] GetInitialParameters(double[] tData, double[] effortData)
     {

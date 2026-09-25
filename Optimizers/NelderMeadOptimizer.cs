@@ -3,30 +3,43 @@ using System.Diagnostics;
 namespace BugConvergenceTool.Optimizers;
 
 /// <summary>
-/// Nelder-Mead法（単体法 / Downhill Simplex法）
-/// 勾配不要の直接探索法で、低次元問題に効果的
+/// Nelder-Mead 法（単体法）
 /// </summary>
+/// <remarks>
+/// <para>
+/// 勾配を使わない局所最適化法。境界制約はロジスティック変換 x = l + (u - l)·σ(z) で
+/// 制約なしの空間 z に写して扱う。以前は各点を境界に切り詰めていたため、単体の頂点が境界面に
+/// 集まって退化し（全頂点で同じ座標になり、その次元に動けなくなる）、a が下限 maxY に張り付くなどの
+/// 早期収束を起こしていた。
+/// </para>
+/// <para>
+/// 収束後は最良点から単体を作り直して再開する（再開で改善しなくなるまで。最大 <c>MaxRestarts</c> 回）。
+/// 単体法は平坦な方向で早期に縮退しやすく、再開は標準的な対策である。
+/// </para>
+/// </remarks>
 public class NelderMeadOptimizer : IOptimizer
 {
     public string Name => "NelderMead";
     public string Description => "Nelder-Mead法 - 勾配不要・低次元に強い局所最適化";
-    
+
+    /// <summary>収束後に単体を作り直して再開する最大回数</summary>
+    private const int MaxRestarts = 4;
+
+    /// <summary>初期単体の辺の長さ（変換後の空間 z での値。σ'(0)=1/4 なので範囲の約 1/8 に相当）</summary>
+    private const double InitialStep = 0.5;
+
+    /// <summary>変換後の空間で端点に近づきすぎないための上限（σ(±30) は 1 - 1e-13 程度）</summary>
+    private const double MaxZ = 30.0;
+
     private readonly int _maxIterations;
     private readonly double _tolerance;
     private readonly double _alpha;   // 反射係数
     private readonly double _gamma;   // 拡大係数
     private readonly double _rho;     // 収縮係数
     private readonly double _sigma;   // 縮小係数
-    
-    /// <summary>
-    /// コンストラクタ
-    /// </summary>
-    /// <param name="maxIterations">最大反復回数（デフォルト: 1000）</param>
-    /// <param name="tolerance">収束判定閾値（デフォルト: 1e-10）</param>
-    /// <param name="alpha">反射係数（デフォルト: 1.0）</param>
-    /// <param name="gamma">拡大係数（デフォルト: 2.0）</param>
-    /// <param name="rho">収縮係数（デフォルト: 0.5）</param>
-    /// <param name="sigma">縮小係数（デフォルト: 0.5）</param>
+
+    /// <param name="maxIterations">最大反復回数（再開を含む合計）</param>
+    /// <param name="tolerance">収束判定の許容誤差（関数値の範囲・単体の大きさ）</param>
     public NelderMeadOptimizer(
         int maxIterations = 1000,
         double tolerance = 1e-10,
@@ -42,7 +55,7 @@ public class NelderMeadOptimizer : IOptimizer
         _rho = rho;
         _sigma = sigma;
     }
-    
+
     public OptimizationResult Optimize(
         Func<double[], double> objectiveFunction,
         double[] lowerBounds,
@@ -51,301 +64,210 @@ public class NelderMeadOptimizer : IOptimizer
     {
         var stopwatch = Stopwatch.StartNew();
         var result = new OptimizationResult { AlgorithmName = Name };
-        
+
         try
         {
             int dim = lowerBounds.Length;
             int evaluations = 0;
-            
-            // 単体（simplex）の初期化: n+1 個の頂点
-            var simplex = new double[dim + 1][];
-            var values = new double[dim + 1];
-            
-            // 初期推定値を設定（なければ中央値）
-            double[] x0 = new double[dim];
+
+            double Evaluate(double[] z)
+            {
+                evaluations++;
+                return SafeEvaluate(objectiveFunction, ToBounded(z, lowerBounds, upperBounds));
+            }
+
+            // 初期点（なければ中央 = z=0）
+            var z0 = new double[dim];
             if (initialGuess != null)
             {
                 for (int i = 0; i < dim; i++)
-                {
-                    x0[i] = Clip(initialGuess[i], lowerBounds[i], upperBounds[i]);
-                }
+                    z0[i] = ToUnbounded(initialGuess[i], lowerBounds[i], upperBounds[i]);
             }
-            else
+
+            double[] bestZ = z0;
+            double bestValue = Evaluate(z0);
+            result.ConvergenceHistory.Add(bestValue);
+            int iterationsLeft = _maxIterations;
+            bool converged = false;
+
+            for (int restart = 0; restart <= MaxRestarts && iterationsLeft > 0; restart++)
             {
-                for (int i = 0; i < dim; i++)
+                var (z, value, iterations, runConverged) = RunSimplex(Evaluate, bestZ, bestValue, dim, iterationsLeft, result.ConvergenceHistory);
+                iterationsLeft -= iterations;
+                converged = runConverged;
+
+                bool improved = value < bestValue - _tolerance * (1 + Math.Abs(bestValue));
+                if (value < bestValue)
                 {
-                    x0[i] = (lowerBounds[i] + upperBounds[i]) / 2.0;
+                    bestValue = value;
+                    bestZ = z;
                 }
+
+                // 再開しても改善しなければ終了（初回は必ず1回再開して確認する）
+                if (restart > 0 && !improved) break;
             }
-            
-            // 最初の頂点は初期推定値
-            simplex[0] = (double[])x0.Clone();
-            values[0] = SafeEvaluate(objectiveFunction, simplex[0]);
-            evaluations++;
-            
-            // 残りの頂点を初期推定値の周りに配置
-            for (int i = 0; i < dim; i++)
-            {
-                simplex[i + 1] = (double[])x0.Clone();
-                
-                // 各次元方向に少しずらす（範囲の5%程度）
-                double step = (upperBounds[i] - lowerBounds[i]) * 0.05;
-                if (step < 1e-8) step = 1e-8;
-                
-                // 上限に近い場合は下方向、それ以外は上方向
-                if (x0[i] + step > upperBounds[i])
-                {
-                    simplex[i + 1][i] = x0[i] - step;
-                }
-                else
-                {
-                    simplex[i + 1][i] = x0[i] + step;
-                }
-                
-                simplex[i + 1][i] = Clip(simplex[i + 1][i], lowerBounds[i], upperBounds[i]);
-                values[i + 1] = SafeEvaluate(objectiveFunction, simplex[i + 1]);
-                evaluations++;
-            }
-            
-            // 初期の最良値を記録
-            int bestIdx = Array.IndexOf(values, values.Min());
-            result.ConvergenceHistory.Add(values[bestIdx]);
-            
-            // メインループ
-            int stagnationCount = 0;
-            double previousBest = values[bestIdx];
-            
-            for (int iter = 0; iter < _maxIterations; iter++)
-            {
-                // 頂点をソート（最良、2番目に悪い、最悪の順序を取得）
-                var indices = Enumerable.Range(0, dim + 1)
-                    .OrderBy(i => values[i])
-                    .ToArray();
-                
-                int best = indices[0];
-                int worst = indices[dim];
-                int secondWorst = indices[dim - 1];
-                
-                double bestValue = values[best];
-                double worstValue = values[worst];
-                double secondWorstValue = values[secondWorst];
-                
-                // 収束判定：単体のサイズが十分小さいか
-                double maxDiff = 0;
-                for (int i = 1; i <= dim; i++)
-                {
-                    double diff = Math.Abs(values[indices[i]] - bestValue);
-                    if (diff > maxDiff) maxDiff = diff;
-                }
-                
-                if (maxDiff < _tolerance)
-                {
-                    break;
-                }
-                
-                // 重心を計算（最悪点を除く）
-                double[] centroid = new double[dim];
-                for (int i = 0; i < dim; i++)
-                {
-                    double sum = 0;
-                    for (int j = 0; j <= dim; j++)
-                    {
-                        if (j != worst)
-                            sum += simplex[j][i];
-                    }
-                    centroid[i] = sum / dim;
-                }
-                
-                // 1. 反射（Reflection）
-                double[] reflected = new double[dim];
-                for (int i = 0; i < dim; i++)
-                {
-                    reflected[i] = Clip(
-                        centroid[i] + _alpha * (centroid[i] - simplex[worst][i]),
-                        lowerBounds[i], upperBounds[i]);
-                }
-                double reflectedValue = SafeEvaluate(objectiveFunction, reflected);
-                evaluations++;
-                
-                if (reflectedValue >= bestValue && reflectedValue < secondWorstValue)
-                {
-                    // 反射点を採用
-                    simplex[worst] = reflected;
-                    values[worst] = reflectedValue;
-                }
-                else if (reflectedValue < bestValue)
-                {
-                    // 2. 拡大（Expansion）
-                    double[] expanded = new double[dim];
-                    for (int i = 0; i < dim; i++)
-                    {
-                        expanded[i] = Clip(
-                            centroid[i] + _gamma * (reflected[i] - centroid[i]),
-                            lowerBounds[i], upperBounds[i]);
-                    }
-                    double expandedValue = SafeEvaluate(objectiveFunction, expanded);
-                    evaluations++;
-                    
-                    if (expandedValue < reflectedValue)
-                    {
-                        simplex[worst] = expanded;
-                        values[worst] = expandedValue;
-                    }
-                    else
-                    {
-                        simplex[worst] = reflected;
-                        values[worst] = reflectedValue;
-                    }
-                }
-                else
-                {
-                    // 3. 収縮（Contraction）
-                    double[] contracted;
-                    double contractedValue;
-                    
-                    if (reflectedValue < worstValue)
-                    {
-                        // Outside contraction
-                        contracted = new double[dim];
-                        for (int i = 0; i < dim; i++)
-                        {
-                            contracted[i] = Clip(
-                                centroid[i] + _rho * (reflected[i] - centroid[i]),
-                                lowerBounds[i], upperBounds[i]);
-                        }
-                        contractedValue = SafeEvaluate(objectiveFunction, contracted);
-                        evaluations++;
-                        
-                        if (contractedValue <= reflectedValue)
-                        {
-                            simplex[worst] = contracted;
-                            values[worst] = contractedValue;
-                        }
-                        else
-                        {
-                            // 4. 縮小（Shrink）
-                            Shrink(simplex, values, best, dim, lowerBounds, upperBounds,
-                                objectiveFunction, ref evaluations);
-                        }
-                    }
-                    else
-                    {
-                        // Inside contraction
-                        contracted = new double[dim];
-                        for (int i = 0; i < dim; i++)
-                        {
-                            contracted[i] = Clip(
-                                centroid[i] - _rho * (centroid[i] - simplex[worst][i]),
-                                lowerBounds[i], upperBounds[i]);
-                        }
-                        contractedValue = SafeEvaluate(objectiveFunction, contracted);
-                        evaluations++;
-                        
-                        if (contractedValue < worstValue)
-                        {
-                            simplex[worst] = contracted;
-                            values[worst] = contractedValue;
-                        }
-                        else
-                        {
-                            // 4. 縮小（Shrink）
-                            Shrink(simplex, values, best, dim, lowerBounds, upperBounds,
-                                objectiveFunction, ref evaluations);
-                        }
-                    }
-                }
-                
-                // 現在の最良値を取得
-                bestIdx = 0;
-                double currentBest = values[0];
-                for (int i = 1; i <= dim; i++)
-                {
-                    if (values[i] < currentBest)
-                    {
-                        currentBest = values[i];
-                        bestIdx = i;
-                    }
-                }
-                
-                result.ConvergenceHistory.Add(currentBest);
-                
-                // 停滞判定
-                if (Math.Abs(previousBest - currentBest) < _tolerance)
-                {
-                    stagnationCount++;
-                    if (stagnationCount > 100)
-                        break;
-                }
-                else
-                {
-                    stagnationCount = 0;
-                }
-                previousBest = currentBest;
-                
-                result.Iterations = iter + 1;
-            }
-            
-            // 最良の頂点を結果として返す
-            bestIdx = 0;
-            double bestValue2 = values[0];
-            for (int i = 1; i <= dim; i++)
-            {
-                if (values[i] < bestValue2)
-                {
-                    bestValue2 = values[i];
-                    bestIdx = i;
-                }
-            }
-            
-            result.Parameters = (double[])simplex[bestIdx].Clone();
-            result.ObjectiveValue = bestValue2;
+
+            result.Parameters = ToBounded(bestZ, lowerBounds, upperBounds);
+            result.ObjectiveValue = bestValue;
             result.FunctionEvaluations = evaluations;
-            result.Success = !double.IsNaN(bestValue2) && !double.IsInfinity(bestValue2);
+            result.Iterations = _maxIterations - iterationsLeft;
+            result.Converged = converged;
+            result.Success = OptimizationResult.IsValidObjective(bestValue);
         }
         catch (Exception ex)
         {
             result.Success = false;
             result.ErrorMessage = ex.Message;
         }
-        
+
         stopwatch.Stop();
         result.ElapsedMilliseconds = stopwatch.ElapsedMilliseconds;
-        
+
         return result;
     }
-    
+
     /// <summary>
-    /// 縮小操作：最良点に向かって全頂点を縮小
+    /// start を頂点の1つとする単体から Nelder-Mead を1回実行する
     /// </summary>
-    private void Shrink(
-        double[][] simplex, double[] values, int best, int dim,
-        double[] lowerBounds, double[] upperBounds,
-        Func<double[], double> objectiveFunction, ref int evaluations)
+    private (double[] z, double value, int iterations, bool converged) RunSimplex(
+        Func<double[], double> evaluate, double[] start, double startValue, int dim, int maxIterations, List<double> history)
     {
-        for (int i = 0; i <= dim; i++)
+        var simplex = new double[dim + 1][];
+        var values = new double[dim + 1];
+        simplex[0] = (double[])start.Clone();
+        values[0] = startValue;
+        for (int i = 0; i < dim; i++)
         {
-            if (i != best)
-            {
-                for (int j = 0; j < dim; j++)
-                {
-                    simplex[i][j] = Clip(
-                        simplex[best][j] + _sigma * (simplex[i][j] - simplex[best][j]),
-                        lowerBounds[j], upperBounds[j]);
-                }
-                values[i] = SafeEvaluate(objectiveFunction, simplex[i]);
-                evaluations++;
-            }
+            simplex[i + 1] = (double[])start.Clone();
+            // 端に近い場合は内側に向けて辺を張る
+            simplex[i + 1][i] += start[i] > MaxZ / 2 ? -InitialStep : InitialStep;
+            values[i + 1] = evaluate(simplex[i + 1]);
         }
+
+        int iter = 0;
+        bool converged = false;
+        var order = new int[dim + 1];
+        var centroid = new double[dim];
+
+        for (; iter < maxIterations; iter++)
+        {
+            for (int i = 0; i <= dim; i++) order[i] = i;
+            Array.Sort(order, (x, y) => values[x].CompareTo(values[y]));
+            int best = order[0], worst = order[dim], secondWorst = order[dim - 1];
+
+            // 収束判定: 関数値の範囲と単体の大きさ（z 空間）の両方が小さい
+            double valueRange = values[worst] - values[best];
+            double size = 0;
+            for (int i = 0; i <= dim; i++)
+                for (int d = 0; d < dim; d++)
+                    size = Math.Max(size, Math.Abs(simplex[i][d] - simplex[best][d]));
+            if (OptimizationResult.IsValidObjective(values[worst])
+                && valueRange <= _tolerance * (1 + Math.Abs(values[best]))
+                && size <= 1e-8)
+            {
+                converged = true;
+                break;
+            }
+
+            // 重心（最悪点を除く）
+            Array.Clear(centroid);
+            for (int j = 0; j <= dim; j++)
+            {
+                if (j == worst) continue;
+                for (int d = 0; d < dim; d++) centroid[d] += simplex[j][d] / dim;
+            }
+
+            // 反射
+            var reflected = Combine(centroid, simplex[worst], -_alpha);
+            double reflectedValue = evaluate(reflected);
+
+            if (reflectedValue < values[best])
+            {
+                // 拡大
+                var expanded = Combine(centroid, simplex[worst], -_alpha * _gamma);
+                double expandedValue = evaluate(expanded);
+                if (expandedValue < reflectedValue)
+                    Replace(simplex, values, worst, expanded, expandedValue);
+                else
+                    Replace(simplex, values, worst, reflected, reflectedValue);
+            }
+            else if (reflectedValue < values[secondWorst])
+            {
+                Replace(simplex, values, worst, reflected, reflectedValue);
+            }
+            else
+            {
+                // 収縮（反射点が最悪点より良ければ外側、そうでなければ内側）
+                bool outside = reflectedValue < values[worst];
+                var contracted = outside
+                    ? Combine(centroid, simplex[worst], -_alpha * _rho)
+                    : Combine(centroid, simplex[worst], _rho);
+                double contractedValue = evaluate(contracted);
+                double reference = outside ? reflectedValue : values[worst];
+
+                if (contractedValue < reference)
+                {
+                    Replace(simplex, values, worst, contracted, contractedValue);
+                }
+                else
+                {
+                    // 縮小: 最良点に向かって全頂点を縮める
+                    for (int i = 0; i <= dim; i++)
+                    {
+                        if (i == best) continue;
+                        for (int d = 0; d < dim; d++)
+                            simplex[i][d] = simplex[best][d] + _sigma * (simplex[i][d] - simplex[best][d]);
+                        values[i] = evaluate(simplex[i]);
+                    }
+                }
+            }
+
+            history.Add(values.Min());
+        }
+
+        int bestIndex = Array.IndexOf(values, values.Min());
+        return (simplex[bestIndex], values[bestIndex], Math.Max(1, iter), converged);
     }
-    
+
     /// <summary>
-    /// 値を境界内にクリップ
+    /// centroid + coefficient × (point - centroid)（z 空間。|z| は MaxZ で抑える）
     /// </summary>
-    private static double Clip(double value, double lower, double upper)
+    private static double[] Combine(double[] centroid, double[] point, double coefficient)
     {
-        return Math.Max(lower, Math.Min(upper, value));
+        var result = new double[centroid.Length];
+        for (int d = 0; d < centroid.Length; d++)
+            result[d] = Math.Clamp(centroid[d] + coefficient * (point[d] - centroid[d]), -MaxZ, MaxZ);
+        return result;
     }
-    
+
+    private static void Replace(double[][] simplex, double[] values, int index, double[] point, double value)
+    {
+        simplex[index] = point;
+        values[index] = value;
+    }
+
+    /// <summary>
+    /// 制約なしの z から境界内の x へ: x = l + (u - l)·σ(z)
+    /// </summary>
+    private static double[] ToBounded(double[] z, double[] lower, double[] upper)
+    {
+        var x = new double[z.Length];
+        for (int i = 0; i < z.Length; i++)
+            x[i] = lower[i] + (upper[i] - lower[i]) / (1 + Math.Exp(-z[i]));
+        return x;
+    }
+
+    /// <summary>
+    /// 境界内の x から z へ（境界上の点は内側にわずかにずらす）
+    /// </summary>
+    private static double ToUnbounded(double x, double lower, double upper)
+    {
+        double range = upper - lower;
+        if (range <= 0) return 0;
+        double p = Math.Clamp((x - lower) / range, 1e-9, 1 - 1e-9);
+        return Math.Log(p / (1 - p));
+    }
+
     private static double SafeEvaluate(Func<double[], double> f, double[] x)
     {
         try

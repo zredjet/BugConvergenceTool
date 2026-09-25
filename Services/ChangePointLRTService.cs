@@ -1,5 +1,5 @@
 using BugConvergenceTool.Models;
-using BugConvergenceTool.Optimizers;
+using MathNet.Numerics.Distributions;
 
 namespace BugConvergenceTool.Services;
 
@@ -8,47 +8,41 @@ namespace BugConvergenceTool.Services;
 /// </summary>
 /// <remarks>
 /// <para>
-/// 変化点モデルと変化点なしモデルを比較し、変化点の存在を統計的に検定します。
+/// 変化点モデルと変化点なしモデル（b₁ = b₂ の場合に一致する帰無モデル）を比較し、変化点の存在を検定する。
+/// 帰無仮説 H0: 変化点なし、対立仮説 H1: 変化点あり。
+/// 検定統計量: LR = -2 (ln L₀ - ln L₁)（Poisson-NHPP の対数尤度）。
 /// </para>
 /// <para>
-/// 帰無仮説 H0: 変化点なし（単純モデル）
-/// 対立仮説 H1: 変化点あり（変化点モデル）
+/// 変化点 τ は帰無仮説の下では識別できない局外パラメータ（Davies 1987）のため、LR は χ² 分布に従わない。
+/// 本実装は Davies の解析的な近似ではなく、帰無モデルの推定値から日次発見数を Poisson 再生成し、
+/// 両モデルを推定し直して LR の帰無分布を求めるパラメトリック・ブートストラップで p 値を計算する。
 /// </para>
 /// <para>
-/// 検定統計量: LR = -2 * (ln(L_0) - ln(L_1)) = -2 * ln(L_0 / L_1)
-/// 漸近的に χ²(df) 分布に従う。df = 変化点モデルのパラメータ数 - 単純モデルのパラメータ数
-/// </para>
-/// <para>
-/// <strong>注意:</strong>
-/// 変化点の位置τが探索範囲内のどこでも取り得る場合、標準的なχ²分布は適用できません。
-/// これは「境界上のパラメータ」問題として知られ、Davies (1987) のアプローチや
-/// シミュレーションベースのp値計算が必要です。本実装ではシミュレーション法を使用します。
+/// 観測データとシミュレーションデータで同じ推定手順を使わないと LR の分布がずれるため、
+/// 推定手順（再推定関数）は呼び出し側から受け取る。
 /// </para>
 /// </remarks>
 public class ChangePointLRTService
 {
-    private readonly OptimizerType _optimizerType;
-    private readonly LossType _lossType;
-    private readonly bool _verbose;
     private readonly int _simulationIterations;
+    private readonly int? _seed;
+    private readonly bool _verbose;
+    private readonly double _significanceLevel;
 
-    /// <summary>
-    /// コンストラクタ
-    /// </summary>
-    /// <param name="optimizerType">最適化アルゴリズム</param>
-    /// <param name="lossType">損失関数タイプ</param>
+    /// <param name="simulationIterations">p値シミュレーション反復回数</param>
+    /// <param name="seed">乱数シード（null なら毎回異なる）</param>
     /// <param name="verbose">詳細出力</param>
-    /// <param name="simulationIterations">p値シミュレーション反復回数（デフォルト: 500）</param>
+    /// <param name="significanceLevel">有意水準</param>
     public ChangePointLRTService(
-        OptimizerType optimizerType = OptimizerType.NelderMead,
-        LossType lossType = LossType.Mle,
+        int simulationIterations = 99,
+        int? seed = null,
         bool verbose = false,
-        int simulationIterations = 500)
+        double significanceLevel = 0.05)
     {
-        _optimizerType = optimizerType;
-        _lossType = lossType;
-        _verbose = verbose;
         _simulationIterations = simulationIterations;
+        _seed = seed;
+        _verbose = verbose;
+        _significanceLevel = significanceLevel;
     }
 
     /// <summary>
@@ -60,70 +54,57 @@ public class ChangePointLRTService
     /// <param name="alternativeModel">対立仮説モデル（変化点あり）</param>
     /// <param name="nullParams">帰無モデルの推定パラメータ</param>
     /// <param name="altParams">対立モデルの推定パラメータ</param>
-    /// <returns>検定結果</returns>
+    /// <param name="refitNull">累積データを受け取り帰無モデルを推定し直す関数（失敗時 null）</param>
+    /// <param name="refitAlternative">累積データを受け取り対立モデルを推定し直す関数（失敗時 null）</param>
     public ChangePointLRTResult Test(
         double[] tData,
         double[] yData,
         ReliabilityGrowthModelBase nullModel,
-        ChangePointModelBase alternativeModel,
+        ReliabilityGrowthModelBase alternativeModel,
         double[] nullParams,
-        double[] altParams)
+        double[] altParams,
+        Func<double[], double[]?> refitNull,
+        Func<double[], double[]?> refitAlternative)
     {
-        var result = new ChangePointLRTResult();
-        
+        var result = new ChangePointLRTResult
+        {
+            NullModelName = nullModel.Name,
+            RequestedSimulations = _simulationIterations,
+            SignificanceLevel = _significanceLevel
+        };
+
         try
         {
-            int n = tData.Length;
-            
-            // 損失関数を取得
-            var lossFunction = LossFunctionFactory.Create(_lossType);
-            
-            // 対数尤度を計算（MLE使用時）または擬似尤度（SSE使用時）
-            double logL0, logL1;
-            
-            if (_lossType == LossType.Mle)
-            {
-                logL0 = lossFunction.CalculateLogLikelihood(tData, yData, nullModel, nullParams);
-                logL1 = lossFunction.CalculateLogLikelihood(tData, yData, alternativeModel, altParams);
-            }
-            else
-            {
-                // SSEの場合、正規仮定での擬似対数尤度
-                // ln(L) ≈ -n/2 * ln(SSE/n)
-                double sse0 = nullModel.CalculateSSE(tData, yData, nullParams);
-                double sse1 = alternativeModel.CalculateSSE(tData, yData, altParams);
-                logL0 = -n / 2.0 * Math.Log(sse0 / n);
-                logL1 = -n / 2.0 * Math.Log(sse1 / n);
-            }
-            
-            // 尤度比統計量
-            double lrStatistic = -2.0 * (logL0 - logL1);
+            double lrStatistic = CalculateLR(tData, yData, nullModel, alternativeModel, nullParams, altParams);
             result.LRStatistic = lrStatistic;
-            result.LogLikelihoodNull = logL0;
-            result.LogLikelihoodAlternative = logL1;
-            
-            // 自由度（パラメータ数の差）
-            int df = altParams.Length - nullParams.Length;
-            result.DegreesOfFreedom = df;
-            
-            // 標準的なχ²近似p値（参考値）
-            if (df > 0 && lrStatistic >= 0)
+            result.DegreesOfFreedom = altParams.Length - nullParams.Length;
+
+            // 標準的なχ²近似p値（参考値。変化点問題では正しくない）
+            result.ChiSquarePValue = result.DegreesOfFreedom > 0 && lrStatistic >= 0
+                ? 1.0 - ChiSquared.CDF(result.DegreesOfFreedom, lrStatistic)
+                : 1.0;
+
+            var (exceed, valid) = SimulateNullDistribution(
+                tData, nullModel, alternativeModel, nullParams, lrStatistic, refitNull, refitAlternative);
+            result.ValidSimulations = valid;
+
+            if (valid == 0)
             {
-                result.ChiSquarePValue = 1.0 - MathNet.Numerics.Distributions.ChiSquared.CDF(df, lrStatistic);
+                result.Success = false;
+                result.ErrorMessage = "シミュレーションでの再推定がすべて失敗しました";
+                return result;
             }
-            else
+
+            // p 値 = (観測値以上の統計量の数 + 1) / (有効なシミュレーション数 + 1)
+            // 失敗したシミュレーションを「超過しなかった」と数えると p 値が小さく偏るため、分母は有効数とする
+            result.SimulatedPValue = (exceed + 1.0) / (valid + 1.0);
+            result.IsChangePointSignificant = result.SimulatedPValue < _significanceLevel;
+
+            if (valid < _simulationIterations / 2)
             {
-                result.ChiSquarePValue = 1.0;
+                result.Warning = $"シミュレーションの再推定の成功が {valid}/{_simulationIterations} 回と少なく、p 値の精度が低い可能性があります。";
             }
-            
-            // シミュレーションベースのp値（変化点問題では必須）
-            result.SimulatedPValue = CalculateSimulatedPValue(
-                tData, yData, nullModel, alternativeModel, nullParams, lrStatistic);
-            
-            // 判定
-            result.IsChangePointSignificant = result.SimulatedPValue < 0.05;
-            
-            // メッセージ生成
+
             result.Interpretation = GenerateInterpretation(result);
             result.Success = true;
         }
@@ -132,190 +113,87 @@ public class ChangePointLRTService
             result.Success = false;
             result.ErrorMessage = ex.Message;
         }
-        
+
         return result;
     }
 
     /// <summary>
-    /// シミュレーションによるp値計算
+    /// Poisson-NHPP 対数尤度による尤度比統計量
     /// </summary>
-    /// <remarks>
-    /// 帰無仮説（変化点なし）の下でデータを再生成し、
-    /// 尤度比統計量の分布をシミュレーションで求めます。
-    /// </remarks>
-    private double CalculateSimulatedPValue(
-        double[] tData,
-        double[] yData,
-        ReliabilityGrowthModelBase nullModel,
-        ChangePointModelBase alternativeModel,
-        double[] nullParams,
-        double observedLR)
+    private static double CalculateLR(
+        double[] tData, double[] yData,
+        ReliabilityGrowthModelBase nullModel, ReliabilityGrowthModelBase alternativeModel,
+        double[] nullParams, double[] altParams)
     {
-        int n = tData.Length;
-        int exceedCount = 0;
-        var random = new Random();
-        
-        // 帰無仮説の下での日次期待値を計算
-        var dailyExpected = new double[n];
-        dailyExpected[0] = nullModel.Calculate(tData[0], nullParams);
-        for (int i = 1; i < n; i++)
-        {
-            double prevM = nullModel.Calculate(tData[i - 1], nullParams);
-            double currM = nullModel.Calculate(tData[i], nullParams);
-            dailyExpected[i] = Math.Max(0.01, currM - prevM); // 最小値を設定
-        }
-        
+        var mle = LossFunctionFactory.Create(LossType.Mle);
+        double logL0 = mle.CalculateLogLikelihood(tData, yData, nullModel, nullParams);
+        double logL1 = mle.CalculateLogLikelihood(tData, yData, alternativeModel, altParams);
+        return -2.0 * (logL0 - logL1);
+    }
+
+    /// <summary>
+    /// 帰無モデルからデータを再生成し、LR の帰無分布を求める
+    /// </summary>
+    /// <returns>(観測 LR 以上になった回数, 再推定に成功した回数)</returns>
+    private (int exceed, int valid) SimulateNullDistribution(
+        double[] tData,
+        ReliabilityGrowthModelBase nullModel,
+        ReliabilityGrowthModelBase alternativeModel,
+        double[] nullParams,
+        double observedLR,
+        Func<double[], double[]?> refitNull,
+        Func<double[], double[]?> refitAlternative)
+    {
+        int exceed = 0, valid = 0;
+        int baseSeed = _seed ?? Random.Shared.Next();
+
         if (_verbose)
         {
-            Console.WriteLine($"  変化点LRT: シミュレーション {_simulationIterations} 回...");
+            Console.WriteLine($"  変化点LRT（{alternativeModel.Name}）: シミュレーション {_simulationIterations} 回...");
         }
-        
-        var lossFunction = LossFunctionFactory.Create(_lossType);
-        var optimizer = OptimizerFactory.Create(_optimizerType);
-        
-        for (int iter = 0; iter < _simulationIterations; iter++)
+
+        Parallel.For(0, _simulationIterations, iter =>
         {
             try
             {
-                // 帰無仮説の下でデータを再生成（Poisson）
-                var simDaily = new double[n];
-                for (int i = 0; i < n; i++)
-                {
-                    simDaily[i] = SamplePoisson(random, dailyExpected[i]);
-                }
-                
-                // 累積化
-                var simY = new double[n];
-                simY[0] = simDaily[0];
-                for (int i = 1; i < n; i++)
-                {
-                    simY[i] = simY[i - 1] + simDaily[i];
-                }
-                
-                // 帰無モデルを再フィット
-                var (lower0, upper0) = nullModel.GetBounds(tData, simY);
-                var initial0 = nullModel.GetInitialParameters(tData, simY);
-                var result0 = optimizer.Optimize(
-                    p => lossFunction.Evaluate(tData, simY, nullModel, p),
-                    lower0, upper0, initial0);
-                
-                if (!result0.Success) continue;
-                
-                // 対立モデル（変化点あり）を再フィット
-                var (lower1, upper1) = alternativeModel.GetBounds(tData, simY);
-                var initial1 = alternativeModel.GetInitialParameters(tData, simY);
-                var result1 = optimizer.Optimize(
-                    p => lossFunction.Evaluate(tData, simY, alternativeModel, p),
-                    lower1, upper1, initial1);
-                
-                if (!result1.Success) continue;
-                
-                // LR統計量を計算
-                double logL0Sim, logL1Sim;
-                if (_lossType == LossType.Mle)
-                {
-                    logL0Sim = lossFunction.CalculateLogLikelihood(tData, simY, nullModel, result0.Parameters);
-                    logL1Sim = lossFunction.CalculateLogLikelihood(tData, simY, alternativeModel, result1.Parameters);
-                }
-                else
-                {
-                    double sse0Sim = nullModel.CalculateSSE(tData, simY, result0.Parameters);
-                    double sse1Sim = alternativeModel.CalculateSSE(tData, simY, result1.Parameters);
-                    logL0Sim = -n / 2.0 * Math.Log(sse0Sim / n);
-                    logL1Sim = -n / 2.0 * Math.Log(sse1Sim / n);
-                }
-                
-                double lrSim = -2.0 * (logL0Sim - logL1Sim);
-                
+                var random = new Random(unchecked(baseSeed + iter * 7919));
+                var simY = ParametricBootstrap.SimulateCumulative(nullModel, tData, nullParams, random);
+
+                var p0 = refitNull(simY);
+                var p1 = refitAlternative(simY);
+                if (p0 == null || p1 == null) return;
+
+                double lrSim = CalculateLR(tData, simY, nullModel, alternativeModel, p0, p1);
+                if (!double.IsFinite(lrSim)) return;
+
+                Interlocked.Increment(ref valid);
                 if (lrSim >= observedLR)
                 {
-                    exceedCount++;
+                    Interlocked.Increment(ref exceed);
                 }
             }
             catch
             {
-                // シミュレーション失敗は無視
+                // 失敗したシミュレーションは有効数に含めない
             }
-        }
-        
-        // p値 = 観測値以上の統計量が出現した割合
-        double pValue = (double)(exceedCount + 1) / (_simulationIterations + 1); // +1 は保守的調整
-        
+        });
+
         if (_verbose)
         {
-            Console.WriteLine($"    シミュレーション完了: 観測LR={observedLR:F2}, 超過回数={exceedCount}, p={pValue:F4}");
+            Console.WriteLine($"    観測LR={observedLR:F2}, 超過={exceed}/{valid}（有効）");
         }
-        
-        return pValue;
+
+        return (exceed, valid);
     }
-    
-    /// <summary>
-    /// Poisson分布からサンプリング
-    /// </summary>
-    private static int SamplePoisson(Random random, double lambda)
-    {
-        if (lambda <= 0) return 0;
-        
-        if (lambda <= 30)
-        {
-            double L = Math.Exp(-lambda);
-            int k = 0;
-            double p = 1.0;
-            
-            do
-            {
-                k++;
-                p *= random.NextDouble();
-            } while (p > L);
-            
-            return k - 1;
-        }
-        else
-        {
-            // 正規近似
-            double u1 = random.NextDouble();
-            double u2 = random.NextDouble();
-            double z = Math.Sqrt(-2 * Math.Log(u1)) * Math.Cos(2 * Math.PI * u2);
-            int result = (int)Math.Round(lambda + Math.Sqrt(lambda) * z);
-            return Math.Max(0, result);
-        }
-    }
-    
-    /// <summary>
-    /// 検定結果の解釈を生成
-    /// </summary>
+
     private static string GenerateInterpretation(ChangePointLRTResult result)
     {
-        if (!result.Success)
-            return $"検定に失敗: {result.ErrorMessage}";
-        
         var sb = new System.Text.StringBuilder();
-        
-        sb.Append($"尤度比統計量 LR = {result.LRStatistic:F2}");
-        sb.Append($" (df={result.DegreesOfFreedom})");
-        sb.AppendLine();
-        
-        sb.Append($"シミュレーションp値 = {result.SimulatedPValue:F4}");
-        sb.Append($" (χ²近似p値 = {result.ChiSquarePValue:F4})");
-        sb.AppendLine();
-        
-        if (result.SimulatedPValue < 0.01)
-        {
-            sb.Append("判定: 変化点が高度に有意 (p < 0.01)。変化点モデルを推奨。");
-        }
-        else if (result.SimulatedPValue < 0.05)
-        {
-            sb.Append("判定: 変化点が有意 (p < 0.05)。変化点モデルを検討。");
-        }
-        else if (result.SimulatedPValue < 0.10)
-        {
-            sb.Append("判定: 変化点が弱く示唆される (p < 0.10)。追加データで再検討を推奨。");
-        }
-        else
-        {
-            sb.Append("判定: 変化点の証拠なし (p ≥ 0.10)。単純モデルを推奨。");
-        }
-        
+        sb.Append($"LR = {result.LRStatistic:F2} (df={result.DegreesOfFreedom}), ");
+        sb.Append($"シミュレーションp値 = {result.SimulatedPValue:F3}（{result.ValidSimulations}回）");
+        sb.Append(result.IsChangePointSignificant
+            ? $" → 有意水準{result.SignificanceLevel:P0}で変化点ありと判断"
+            : $" → 変化点の証拠は不十分（変化点なしの {result.NullModelName} で十分）");
         return sb.ToString();
     }
 }
@@ -325,33 +203,38 @@ public class ChangePointLRTService
 /// </summary>
 public class ChangePointLRTResult
 {
-    /// <summary>検定成功フラグ</summary>
     public bool Success { get; set; }
-    
-    /// <summary>エラーメッセージ</summary>
     public string? ErrorMessage { get; set; }
-    
-    /// <summary>尤度比統計量 LR = -2 * ln(L0/L1)</summary>
+
+    /// <summary>帰無モデル（変化点なし）の名前</summary>
+    public string NullModelName { get; set; } = "";
+
+    /// <summary>尤度比統計量 LR = -2(ln L₀ - ln L₁)</summary>
     public double LRStatistic { get; set; }
-    
-    /// <summary>帰無モデルの対数尤度</summary>
-    public double LogLikelihoodNull { get; set; }
-    
-    /// <summary>対立モデルの対数尤度</summary>
-    public double LogLikelihoodAlternative { get; set; }
-    
-    /// <summary>自由度（パラメータ数の差）</summary>
+
+    /// <summary>パラメータ数の差</summary>
     public int DegreesOfFreedom { get; set; }
-    
-    /// <summary>χ²分布に基づくp値（参考値）</summary>
+
+    /// <summary>χ² 近似の p 値（参考値。変化点問題では正しくない）</summary>
     public double ChiSquarePValue { get; set; }
-    
-    /// <summary>シミュレーションベースのp値（推奨）</summary>
-    public double SimulatedPValue { get; set; }
-    
-    /// <summary>変化点が統計的に有意か（p < 0.05）</summary>
+
+    /// <summary>パラメトリック・ブートストラップによる p 値</summary>
+    public double SimulatedPValue { get; set; } = 1.0;
+
+    /// <summary>要求したシミュレーション回数</summary>
+    public int RequestedSimulations { get; set; }
+
+    /// <summary>再推定に成功したシミュレーション回数（p 値の分母）</summary>
+    public int ValidSimulations { get; set; }
+
+    /// <summary>有意水準</summary>
+    public double SignificanceLevel { get; set; } = 0.05;
+
+    /// <summary>変化点が有意か</summary>
     public bool IsChangePointSignificant { get; set; }
-    
-    /// <summary>検定結果の解釈</summary>
+
+    /// <summary>注意事項（シミュレーション成功数が少ない等）</summary>
+    public string? Warning { get; set; }
+
     public string Interpretation { get; set; } = "";
 }
