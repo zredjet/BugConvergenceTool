@@ -432,7 +432,7 @@ class Program
         Console.WriteLine($"\n=== 収束予測（{bestResult.ModelName}）===\n");
         
         Console.WriteLine($"推定潜在バグ総数: {bestResult.EstimatedTotalBugs:F1} 件");
-        Console.WriteLine($"残り推定バグ数: {bestResult.EstimatedTotalBugs - bestResult.PredictedValues.Last():F1} 件");
+        Console.WriteLine($"残り推定バグ数: {bestResult.EstimatedTotalBugs - testData.CurrentCumulativeBugs:F1} 件");
         Console.WriteLine($"使用損失関数: {bestResult.LossFunctionUsed}");
         Console.WriteLine();
         
@@ -491,34 +491,29 @@ class Program
     /// </summary>
     static void PrintConvergenceAssessment(TestData testData, FittingResult bestResult)
     {
-        var cumulativeFound = testData.GetCumulativeBugsFound();
-        double currentRatio = cumulativeFound.Last() / bestResult.EstimatedTotalBugs;
-        
+        double currentFound = testData.CurrentCumulativeBugs;
+        var assessment = ConvergenceAssessment.Evaluate(currentFound, bestResult.EstimatedTotalBugs);
+
         Console.WriteLine("\n=== 収束判断の目安 ===\n");
-        
-        if (currentRatio >= 0.99)
+
+        Console.ForegroundColor = assessment.Level switch
         {
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("  ★★★ 十分に収束しています。リリース可能な状態です。");
-        }
-        else if (currentRatio >= 0.95)
-        {
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("  ★★☆ ほぼ収束しています。ベータリリースに適した状態です。");
-        }
-        else if (currentRatio >= 0.90)
+            ConvergenceLevel.Converged => ConsoleColor.Green,
+            ConvergenceLevel.NearlyConverged => ConsoleColor.Cyan,
+            ConvergenceLevel.Converging => ConsoleColor.Yellow,
+            _ => ConsoleColor.Red
+        };
+        Console.WriteLine($"  {assessment.Stars} {assessment.Message}");
+        Console.ResetColor();
+
+        if (assessment.Note != null)
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("  ★☆☆ 収束傾向にあります。継続的なテストが推奨されます。");
+            Console.WriteLine($"  注意: {assessment.Note}");
+            Console.ResetColor();
         }
-        else
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("  ☆☆☆ まだ収束していません。テスト継続が必要です。");
-        }
-        Console.ResetColor();
-        
-        Console.WriteLine($"\n  現在の発見率: {currentRatio * 100:F1}% ({cumulativeFound.Last():F0} / {bestResult.EstimatedTotalBugs:F1})");
+
+        Console.WriteLine($"\n  現在の発見率: {ConvergenceAssessment.FormatRatio(assessment.Ratio)} ({currentFound:F0} / {bestResult.EstimatedTotalBugs:F1})");
     }
     
     /// <summary>
@@ -533,7 +528,7 @@ class Program
         {
             string desc = name switch
             {
-                "a" => "（潜在バグ総数）",
+                "a" => "（規模パラメータ。潜在バグ総数は m(∞)）",
                 "b" => "（バグ発見率）",
                 "c" => "（形状パラメータ）",
                 "p" => "（不完全デバッグ率）",

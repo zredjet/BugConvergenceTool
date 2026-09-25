@@ -491,8 +491,10 @@ public class IntegratedFREModel : FaultRemovalEfficiencyModelBase
             // 変化点での値
             double m_tau = a * (1 - Math.Exp(-b1 * factor * tau)) / factor;
             
-            // 変化点後
-            double remainingA = a + alpha * m_tau - m_tau * factor;
+            // 変化点後: dm/dt = b₂(a - (1-α)m) を m(τ)=m_τ から解く
+            // m(t) = m_τ + (a - (1-α)m_τ)/(1-α) · (1 - e^(-b₂(1-α)(t-τ)))
+            // （b₁=b₂ のとき変化点なしの解 a(1-e^(-b(1-α)t))/(1-α) と一致する）
+            double remainingA = a - factor * m_tau;
             if (remainingA <= 0)
                 return m_tau;
             

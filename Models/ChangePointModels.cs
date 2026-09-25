@@ -27,13 +27,16 @@ public class ExponentialChangePointModel : ChangePointModelBase
     public override string[] ParameterNames => new[] { "a₁", "b₁", "a₂", "b₂", "τ" };
     
     /// <summary>
-    /// 漸近的総欠陥数: a₁ + a₂
+    /// 漸近的総欠陥数: m(∞) = m₁(τ) + a₂
     /// </summary>
+    /// <remarks>
+    /// 変化点前の集団は τ までしか検出されないため、a₁ 全体ではなく m₁(τ) のみが寄与する。
+    /// </remarks>
     public override double GetAsymptoticTotalBugs(double[] parameters)
     {
-        double a1 = parameters[0];
         double a2 = parameters[2];
-        return a1 + a2;
+        double tau = parameters[4];
+        return Calculate(tau, parameters) + a2;
     }
     
     public override double Calculate(double t, double[] p)
@@ -98,13 +101,16 @@ public class DelayedSChangePointModel : ChangePointModelBase
     public override string[] ParameterNames => new[] { "a₁", "b₁", "a₂", "b₂", "τ" };
     
     /// <summary>
-    /// 漸近的総欠陥数: a₁ + a₂
+    /// 漸近的総欠陥数: m(∞) = m₁(τ) + a₂
     /// </summary>
+    /// <remarks>
+    /// 変化点前の集団は τ までしか検出されないため、a₁ 全体ではなく m₁(τ) のみが寄与する。
+    /// </remarks>
     public override double GetAsymptoticTotalBugs(double[] parameters)
     {
-        double a1 = parameters[0];
         double a2 = parameters[2];
-        return a1 + a2;
+        double tau = parameters[4];
+        return Calculate(tau, parameters) + a2;
     }
     
     public override double Calculate(double t, double[] p)
@@ -296,17 +302,33 @@ public class MultipleChangePointModel : ChangePointModelBase
     }
     
     /// <summary>
-    /// 漸近的総欠陥数: 全セグメントのaの合計
+    /// 漸近的総欠陥数: m(∞) = Σ_{i&lt;最終} a_i(1-e^(-b_i(τ_i-τ_{i-1}))) + a_最終
     /// </summary>
+    /// <remarks>
+    /// 途中のセグメントは次の変化点までしか検出されないため、a_i 全体ではなく
+    /// そのセグメント区間での検出分のみが寄与する。
+    /// </remarks>
     public override double GetAsymptoticTotalBugs(double[] parameters)
     {
         int numSegments = _numChangePoints + 1;
-        double total = 0;
-        for (int i = 0; i < numSegments; i++)
+        var tau = new double[_numChangePoints];
+        for (int i = 0; i < _numChangePoints; i++)
         {
-            total += parameters[i * 2]; // a_i
+            tau[i] = parameters[numSegments * 2 + i];
         }
-        return total;
+        Array.Sort(tau);
+        
+        double total = 0;
+        for (int i = 0; i < numSegments - 1; i++)
+        {
+            double segStart = (i == 0) ? 0 : tau[i - 1];
+            double dt = tau[i] - segStart;
+            if (dt > 0)
+            {
+                total += parameters[i * 2] * (1 - Math.Exp(-parameters[i * 2 + 1] * dt));
+            }
+        }
+        return total + parameters[(numSegments - 1) * 2];
     }
     
     public override double Calculate(double t, double[] p)

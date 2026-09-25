@@ -10,6 +10,8 @@
     <Version>1.0.0</Version>
     <Authors>BugConvergenceTool</Authors>
     <Description>バグ収束推定ツール - 信頼度成長モデルによる品質分析</Description>
+    <!-- テストプロジェクトのソースを本体のビルドに含めない -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

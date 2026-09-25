@@ -54,6 +54,9 @@ dotnet build -c Release
 
 # 発行（単一実行ファイル）
 dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true
+
+# 単体テスト
+dotnet test tests/BugConvergenceTool.Tests
 ```
 
 ## 使用方法
@@ -209,6 +212,7 @@ output/
 >
 > - Ohba型モデルは Ohba, M. (1984). "Software Reliability Analysis Models." IBM Journal of Research and Development に基づきます。
 > - Shiftedゴンペルツの漸近値は a ではなく a(1-e^(-b)) です（b=3で約95%、b=5で約99%がaに到達）。本ツールの収束予測ではこの正しい漸近値を使用しています。
+> - 「推定潜在バグ総数」「現在の発見率」「収束判断の目安（★評価）」は、全モデルでパラメータ a ではなく漸近値 m(∞) を使用します。変化点・不完全デバッグ・TEF・FRE 系モデルでは a と m(∞) が一致しないためです（例: 指数型+変化点は m₁(τ)+a₂、Weibull型不完全デバッグは a/(1+p)、有限工数の TEF 指数型は a(1-e^(-bN))）。
 > - Shiftedゴンペルツは統計学のShifted Gompertz分布のSRGMへの応用であり、標準的なゴンペルツSRGM文献とは異なる形式です。
 
 #### 基本モデルのパラメータ

@@ -40,8 +40,12 @@ public class FittingResult
     // 収束予測
     public Dictionary<string, ConvergencePrediction> ConvergencePredictions { get; set; } = new();
     
-    // 推定潜在バグ数（パラメータa）
-    public double EstimatedTotalBugs => Parameters.GetValueOrDefault("a", 0);
+    /// <summary>
+    /// 推定潜在バグ総数（漸近値 m(∞)）
+    /// フィッティング時に <see cref="ReliabilityGrowthModelBase.GetAsymptoticTotalBugs"/> で設定する。
+    /// パラメータ a は m(∞) と一致しないモデル（変化点・不完全デバッグ・TEF 等）があるため直接使わないこと。
+    /// </summary>
+    public double EstimatedTotalBugs { get; set; }
     
     // 不完全デバッグ率（パラメータp）
     public double? ImperfectDebugRate => Parameters.ContainsKey("p") ? Parameters["p"] : null;

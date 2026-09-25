@@ -47,6 +47,29 @@ public abstract class TEFBasedModelBase : ReliabilityGrowthModelBase
     }
     
     /// <summary>
+    /// 累積工数 W における平均値関数 m(W) を計算
+    /// W = +∞（無限工数関数の t→∞）も扱えること
+    /// </summary>
+    protected abstract double CalculateAtEffort(double W, double[] parameters);
+    
+    public override double Calculate(double t, double[] parameters)
+    {
+        return CalculateAtEffort(CalculateEffort(t, parameters), parameters);
+    }
+    
+    /// <summary>
+    /// 漸近的総欠陥数: m(∞) = m(W(∞))
+    /// </summary>
+    /// <remarks>
+    /// 有限工数関数（W(∞)=N）では工数を使い切った時点の値となり、a とは一致しない。
+    /// </remarks>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double totalEffort = _tef.CalculateTotalEffort(GetTEFParams(parameters));
+        return CalculateAtEffort(totalEffort, parameters);
+    }
+    
+    /// <summary>
     /// TEFパラメータの初期値/境界用のデータを取得
     /// </summary>
     /// <remarks>
@@ -94,13 +117,10 @@ public class TEFExponentialModel : TEFBasedModelBase
     
     protected override int TEFParamStartIndex => 2;
     
-    public override double Calculate(double t, double[] parameters)
+    protected override double CalculateAtEffort(double W, double[] parameters)
     {
         double a = parameters[0];
         double b = parameters[1];
-        var tefParams = GetTEFParams(parameters);
-        
-        double W = _tef.CalculateW(t, tefParams);
         return a * (1 - Math.Exp(-b * W));
     }
     
@@ -173,13 +193,15 @@ public class TEFDelayedSModel : TEFBasedModelBase
     
     protected override int TEFParamStartIndex => 2;
     
-    public override double Calculate(double t, double[] parameters)
+    protected override double CalculateAtEffort(double W, double[] parameters)
     {
         double a = parameters[0];
         double b = parameters[1];
-        var tefParams = GetTEFParams(parameters);
         
-        double W = _tef.CalculateW(t, tefParams);
+        // W=∞ では (1+bW)e^(-bW) が ∞·0 になるため極限値 0 を使う
+        if (double.IsPositiveInfinity(W))
+            return a;
+        
         double bW = b * W;
         return a * (1 - (1 + bW) * Math.Exp(-bW));
     }
@@ -255,28 +277,11 @@ public class TEFImperfectDebugModel : TEFBasedModelBase
     
     protected override int TEFParamStartIndex => 3;
     
-    /// <summary>
-    /// 漸近的総欠陥数: a / (1 - α)
-    /// </summary>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        double a = parameters[0];
-        double alpha = parameters[2];
-        
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        return a / (1 - alpha);
-    }
-    
-    public override double Calculate(double t, double[] parameters)
+    protected override double CalculateAtEffort(double W, double[] parameters)
     {
         double a = parameters[0];
         double b = parameters[1];
         double alpha = parameters[2];
-        var tefParams = GetTEFParams(parameters);
-        
-        double W = _tef.CalculateW(t, tefParams);
         
         // 解析解: m(t) = a(1 - e^(-b(1-α)W)) / (1 - α(1 - e^(-b(1-α)W)))
         // ただし α < 1 の場合

@@ -262,6 +262,7 @@ public class RobustChangePointDetector
                 Category = fixedModel.Category,
                 Success = true,
                 ParameterVector = parameters,
+                EstimatedTotalBugs = fixedModel.GetAsymptoticTotalBugs(parameters),
                 PredictedValues = tData.Select(t => fixedModel.Calculate(t, parameters)).ToArray(),
                 PredictionTimes = (double[])tData.Clone(),
                 R2 = fixedModel.CalculateR2(tData, yData, parameters),
@@ -337,13 +338,12 @@ internal class FixedTauPnzChangePointModel : ReliabilityGrowthModelBase
     public override string Description => $"変化点τ={_fixedTau}で固定したPNZ型モデル";
     public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "p" };
     
+    /// <summary>
+    /// 漸近的総欠陥数: u(t)→∞ で e^(-u)→0 より m(∞) = a（p に依存しない）
+    /// </summary>
     public override double GetAsymptoticTotalBugs(double[] parameters)
     {
-        double a = parameters[0];
-        double p = parameters[3];
-        // p >= 1 の場合の発散を防ぐ
-        if (p >= 1.0) return a * 100;
-        return a / (1.0 + p);
+        return parameters[0];
     }
     
     public override double Calculate(double t, double[] p)
@@ -410,9 +410,12 @@ internal class FixedTauExponentialChangePointModel : ReliabilityGrowthModelBase
     public override string Description => $"変化点τ={_fixedTau}で固定した指数型モデル";
     public override string[] ParameterNames => new[] { "a₁", "b₁", "a₂", "b₂" };
     
+    /// <summary>
+    /// 漸近的総欠陥数: m(∞) = m₁(τ) + a₂
+    /// </summary>
     public override double GetAsymptoticTotalBugs(double[] parameters)
     {
-        return parameters[0] + parameters[2]; // a₁ + a₂
+        return Calculate(_fixedTau, parameters) + parameters[2];
     }
     
     public override double Calculate(double t, double[] p)
@@ -469,9 +472,12 @@ internal class FixedTauDelayedSChangePointModel : ReliabilityGrowthModelBase
     public override string Description => $"変化点τ={_fixedTau}で固定した遅延S字型モデル";
     public override string[] ParameterNames => new[] { "a₁", "b₁", "a₂", "b₂" };
     
+    /// <summary>
+    /// 漸近的総欠陥数: m(∞) = m₁(τ) + a₂
+    /// </summary>
     public override double GetAsymptoticTotalBugs(double[] parameters)
     {
-        return parameters[0] + parameters[2]; // a₁ + a₂
+        return Calculate(_fixedTau, parameters) + parameters[2];
     }
     
     public override double Calculate(double t, double[] p)

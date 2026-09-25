@@ -169,7 +169,8 @@ public class ExcelWriter
         ws.Cell(convRow, 1).Style.Font.Bold = true;
         
         ws.Cell(convRow + 1, 1).Value = "現在の発見率";
-        ws.Cell(convRow + 1, 2).Value = $"{_testData.CurrentCumulativeBugs / bestResult.EstimatedTotalBugs * 100:F1}%";
+        ws.Cell(convRow + 1, 2).Value = ConvergenceAssessment.FormatRatio(
+            ConvergenceAssessment.Evaluate(_testData.CurrentCumulativeBugs, bestResult.EstimatedTotalBugs).Ratio);
         
         ws.Cell(convRow + 3, 1).Value = "マイルストーン";
         ws.Cell(convRow + 3, 2).Value = "予測日数";

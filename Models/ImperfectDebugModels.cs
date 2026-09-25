@@ -117,6 +117,16 @@ public class GeneralizedImperfectDebugModel : ReliabilityGrowthModelBase
     public override string Description => "Pham型をWeibull発見率に拡張。c>1でS字、c=1で指数型、c<1で凸型";
     public override string[] ParameterNames => new[] { "a", "b", "c", "p" };
 
+    /// <summary>
+    /// 漸近的総欠陥数: t→∞ で (1-e^(-bt^c))→1 より m(∞) = a/(1+p)
+    /// </summary>
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+    {
+        double a = parameters[0];
+        double p = parameters[3];
+        return a / (1 + p);
+    }
+
     public override double Calculate(double t, double[] parameters)
     {
         double a = parameters[0];

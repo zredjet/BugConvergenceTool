@@ -128,6 +128,9 @@ public class ModelFitter
             
             // 信頼区間計算用：パラメータベクトル（順序を保持）
             result.ParameterVector = (double[])parameters.Clone();
+
+            // 推定潜在バグ総数はパラメータ a ではなく漸近値 m(∞) を使う
+            result.EstimatedTotalBugs = model.GetAsymptoticTotalBugs(parameters);
             
             // 予測時刻と予測値を計算（全データに対して）
             result.PredictionTimes = (double[])_tData.Clone();

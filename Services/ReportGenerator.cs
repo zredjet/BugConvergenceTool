@@ -153,7 +153,7 @@ public class ReportGenerator
         {
             string desc = name switch
             {
-                "a" => "（潜在バグ総数）",
+                "a" => "（規模パラメータ。潜在バグ総数は m(∞)）",
                 "b" => "（バグ発見率）",
                 "c" => "（形状パラメータ）",
                 "p" => "（不完全デバッグ率）",
@@ -175,9 +175,10 @@ public class ReportGenerator
         sb.AppendLine();
         
         // 推定結果
+        var assessment = ConvergenceAssessment.Evaluate(cumulativeFound.Last(), bestResult.EstimatedTotalBugs);
         sb.AppendLine("  推定結果:");
         sb.AppendLine($"    推定潜在バグ総数:   {bestResult.EstimatedTotalBugs:F1} 件");
-        sb.AppendLine($"    現在の発見率:       {cumulativeFound.Last() / bestResult.EstimatedTotalBugs * 100:F1}%");
+        sb.AppendLine($"    現在の発見率:       {ConvergenceAssessment.FormatRatio(assessment.Ratio)}");
         sb.AppendLine($"    残り推定バグ数:     {bestResult.EstimatedTotalBugs - cumulativeFound.Last():F1} 件");
         sb.AppendLine();
         
@@ -207,25 +208,11 @@ public class ReportGenerator
         sb.AppendLine("--------------------------------------------------------------------------------");
         sb.AppendLine();
         
-        double currentRatio = cumulativeFound.Last() / bestResult.EstimatedTotalBugs;
-        double remainingBugs = bestResult.EstimatedTotalBugs - cumulativeFound.Last();
-        
         sb.AppendLine("  収束状況の評価:");
-        if (currentRatio >= 0.99)
+        sb.AppendLine($"    {assessment.Stars} {assessment.Message}");
+        if (assessment.Note != null)
         {
-            sb.AppendLine("    ★★★ 十分に収束しています。リリース可能な状態です。");
-        }
-        else if (currentRatio >= 0.95)
-        {
-            sb.AppendLine("    ★★☆ ほぼ収束しています。ベータリリースに適した状態です。");
-        }
-        else if (currentRatio >= 0.90)
-        {
-            sb.AppendLine("    ★☆☆ 収束傾向にあります。継続的なテストが推奨されます。");
-        }
-        else
-        {
-            sb.AppendLine("    ☆☆☆ まだ収束していません。テスト継続が必要です。");
+            sb.AppendLine($"    注意: {assessment.Note}");
         }
         sb.AppendLine();
         
