@@ -49,22 +49,37 @@ public sealed class TimeSeriesSplitResult
 /// <summary>
 /// ホールドアウト検証の結果
 /// </summary>
+/// <remarks>
+/// 累積値そのものの誤差は、累積値が大きいため相対誤差が常に小さく出て予測性能を表さない。
+/// そのため、ホールドアウト期間中の「増分」（新たに発見されるバグ数）で評価する。
+/// </remarks>
 public sealed class HoldoutValidationResult
 {
     /// <summary>
-    /// 平均二乗誤差（Mean Squared Error）
+    /// ホールドアウト期間中の予測発見数（m(T_end) - m(T_train)）
     /// </summary>
-    public double Mse { get; init; }
+    public double PredictedIncrement { get; init; }
     
     /// <summary>
-    /// 平均絶対パーセント誤差（Mean Absolute Percentage Error）
+    /// ホールドアウト期間中の実測発見数
     /// </summary>
-    public double Mape { get; init; }
+    public double ActualIncrement { get; init; }
     
     /// <summary>
-    /// 平均絶対誤差（Mean Absolute Error）
+    /// 期間増分の相対誤差（%、符号付き）= (予測 - 実測) / 実測 × 100
+    /// 正なら過大予測、負なら過小予測。実測が 0 の場合は NaN
     /// </summary>
-    public double Mae { get; init; }
+    public double IncrementErrorPercent { get; init; }
+    
+    /// <summary>
+    /// 日次増分の平均絶対誤差（件/日）
+    /// </summary>
+    public double DailyMae { get; init; }
+    
+    /// <summary>
+    /// 日次増分の二乗平均平方根誤差（件/日）
+    /// </summary>
+    public double DailyRmse { get; init; }
     
     /// <summary>
     /// テストデータ点数
@@ -77,14 +92,14 @@ public sealed class HoldoutValidationResult
     public List<string> Warnings { get; init; } = new();
     
     /// <summary>
-    /// 予測値の配列（テスト期間）
+    /// 日次増分の予測値（テスト期間）
     /// </summary>
-    public double[] Predictions { get; init; } = Array.Empty<double>();
+    public double[] PredictedDaily { get; init; } = Array.Empty<double>();
     
     /// <summary>
-    /// 実測値の配列（テスト期間）
+    /// 日次増分の実測値（テスト期間）
     /// </summary>
-    public double[] Actuals { get; init; } = Array.Empty<double>();
+    public double[] ActualDaily { get; init; } = Array.Empty<double>();
 }
 
 /// <summary>
@@ -169,89 +184,83 @@ public static class ValidationUtility
     }
     
     /// <summary>
-    /// ホールドアウト検証の評価指標を計算
+    /// ホールドアウト期間の増分に基づく評価指標を計算
     /// </summary>
-    /// <param name="predictions">予測値</param>
-    /// <param name="actuals">実測値</param>
-    /// <returns>検証結果</returns>
-    public static HoldoutValidationResult CalculateMetrics(double[] predictions, double[] actuals)
+    /// <param name="predictedCumulative">テスト期間の各時点のモデル予測累積値 m(tᵢ)</param>
+    /// <param name="predictedAtTrainEnd">訓練最終時点のモデル予測累積値 m(T_train)</param>
+    /// <param name="actualCumulative">テスト期間の各時点の実測累積値</param>
+    /// <param name="actualAtTrainEnd">訓練最終時点の実測累積値</param>
+    /// <remarks>
+    /// 予測増分はモデル自身の m(T_train) を起点とする（訓練最終時点での当てはめのずれを評価に混ぜない）。
+    /// </remarks>
+    public static HoldoutValidationResult CalculateIncrementMetrics(
+        double[] predictedCumulative,
+        double predictedAtTrainEnd,
+        double[] actualCumulative,
+        double actualAtTrainEnd)
     {
-        if (predictions.Length != actuals.Length)
+        if (predictedCumulative.Length != actualCumulative.Length)
             throw new ArgumentException("予測値と実測値の長さが一致しません");
         
-        int n = predictions.Length;
+        int n = predictedCumulative.Length;
         if (n == 0)
         {
             return new HoldoutValidationResult
             {
-                Mse = double.NaN,
-                Mape = double.NaN,
-                Mae = double.NaN,
+                IncrementErrorPercent = double.NaN,
+                DailyMae = double.NaN,
+                DailyRmse = double.NaN,
                 TestCount = 0,
                 Warnings = new List<string> { "テストデータがありません" }
             };
         }
         
+        var predictedDaily = new double[n];
+        var actualDaily = new double[n];
+        double prevPredicted = predictedAtTrainEnd;
+        double prevActual = actualAtTrainEnd;
+        for (int i = 0; i < n; i++)
+        {
+            predictedDaily[i] = predictedCumulative[i] - prevPredicted;
+            actualDaily[i] = actualCumulative[i] - prevActual;
+            prevPredicted = predictedCumulative[i];
+            prevActual = actualCumulative[i];
+        }
+        
+        double predictedIncrement = predictedCumulative[^1] - predictedAtTrainEnd;
+        double actualIncrement = actualCumulative[^1] - actualAtTrainEnd;
+        
         var warnings = new List<string>();
-        
-        // 残差の計算
-        var residuals = new double[n];
-        for (int i = 0; i < n; i++)
+        double incrementErrorPercent;
+        if (actualIncrement > 0)
         {
-            residuals[i] = actuals[i] - predictions[i];
-        }
-        
-        // MSE: Mean Squared Error
-        double mse = residuals.Select(e => e * e).Average();
-        
-        // MAE: Mean Absolute Error
-        double mae = residuals.Select(e => Math.Abs(e)).Average();
-        
-        // MAPE: Mean Absolute Percentage Error（0除算ガード付き）
-        const double epsilon = 1e-6;
-        int zeroCount = 0;
-        double mapeSum = 0;
-        
-        for (int i = 0; i < n; i++)
-        {
-            double actual = actuals[i];
-            if (Math.Abs(actual) < epsilon)
-            {
-                zeroCount++;
-                continue;
-            }
-            mapeSum += Math.Abs(residuals[i] / actual);
-        }
-        
-        double mape;
-        if (zeroCount == n)
-        {
-            mape = double.NaN;
-            warnings.Add("全ての実測値がゼロに近いため、MAPEを計算できません");
+            incrementErrorPercent = (predictedIncrement - actualIncrement) / actualIncrement * 100.0;
         }
         else
         {
-            mape = (mapeSum / (n - zeroCount)) * 100.0;
-            if (zeroCount > 0)
-            {
-                warnings.Add($"{zeroCount}点の実測値がゼロに近いため、MAPEの計算から除外しました");
-            }
+            incrementErrorPercent = double.NaN;
+            warnings.Add("ホールドアウト期間に新たなバグ発見がないため、期間増分の相対誤差を計算できません（日次誤差のみで評価）");
         }
         
-        // 警告の追加
-        if (mape > 50 && !double.IsNaN(mape))
+        double dailyMae = 0, sumSq = 0;
+        for (int i = 0; i < n; i++)
         {
-            warnings.Add("ホールドアウト区間での予測誤差が大きく（MAPE > 50%）、将来予測の不確実性が高いと考えられます");
+            double e = predictedDaily[i] - actualDaily[i];
+            dailyMae += Math.Abs(e);
+            sumSq += e * e;
         }
+        dailyMae /= n;
         
         return new HoldoutValidationResult
         {
-            Mse = mse,
-            Mape = mape,
-            Mae = mae,
+            PredictedIncrement = predictedIncrement,
+            ActualIncrement = actualIncrement,
+            IncrementErrorPercent = incrementErrorPercent,
+            DailyMae = dailyMae,
+            DailyRmse = Math.Sqrt(sumSq / n),
             TestCount = n,
-            Predictions = predictions,
-            Actuals = actuals,
+            PredictedDaily = predictedDaily,
+            ActualDaily = actualDaily,
             Warnings = warnings
         };
     }

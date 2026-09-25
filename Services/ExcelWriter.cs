@@ -98,9 +98,9 @@ public class ExcelWriter
         
         // ヘッダー
         // ヘッダー（ホールドアウト検証の列を追加）
-        var hasHoldout = results.Any(r => r.HoldoutMse.HasValue);
+        var hasHoldout = results.Any(r => r.Holdout != null);
         var headers = hasHoldout 
-            ? new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "不完全デバッグ率", "Holdout_MSE", "Holdout_MAPE(%)", "損失関数", "95%発見日", "99%発見日" }
+            ? new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "不完全デバッグ率", "HO予測発見数", "HO実測発見数", "HO誤差(%)", "HO日次MAE", "損失関数", "95%発見日", "99%発見日" }
             : new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "不完全デバッグ率", "95%発見日", "99%発見日" };
         for (int i = 0; i < headers.Length; i++)
         {
@@ -135,8 +135,11 @@ public class ExcelWriter
             // ホールドアウト検証結果
             if (hasHoldout)
             {
-                ws.Cell(row, col++).Value = result.HoldoutMse.HasValue ? result.HoldoutMse.Value : "-";
-                ws.Cell(row, col++).Value = result.HoldoutMape.HasValue ? $"{result.HoldoutMape.Value:F2}" : "-";
+                var h = result.Holdout;
+                ws.Cell(row, col++).Value = h != null ? h.PredictedIncrement : "-";
+                ws.Cell(row, col++).Value = h != null ? h.ActualIncrement : "-";
+                ws.Cell(row, col++).Value = result.HoldoutIncrementErrorPercent.HasValue ? result.HoldoutIncrementErrorPercent.Value : "-";
+                ws.Cell(row, col++).Value = h != null ? h.DailyMae : "-";
                 ws.Cell(row, col++).Value = result.LossFunctionUsed;
             }
             

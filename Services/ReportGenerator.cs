@@ -300,6 +300,9 @@ public class ReportGenerator
             sb.AppendLine();
         }
         
+        // ホールドアウト検証結果（--holdout-days 指定時）
+        AppendHoldoutResults(sb, results);
+        
         sb.AppendLine("================================================================================");
         sb.AppendLine("                          レポート終了");
         sb.AppendLine("================================================================================");
@@ -354,27 +357,28 @@ public class ReportGenerator
     /// </summary>
     private void AppendHoldoutResults(StringBuilder sb, List<FittingResult> results)
     {
-        var resultsWithHoldout = results.Where(r => r.Success && r.HoldoutMse.HasValue).ToList();
+        var resultsWithHoldout = results.Where(r => r.Success && r.Holdout != null).ToList();
         if (!resultsWithHoldout.Any()) return;
         
         sb.AppendLine("--------------------------------------------------------------------------------");
         sb.AppendLine("【ホールドアウト検証結果】");
         sb.AppendLine("--------------------------------------------------------------------------------");
         sb.AppendLine();
-        sb.AppendLine($"{"モデル名",-25} {"MSE",12} {"MAE",12} {"MAPE(%)",12}");
-        sb.AppendLine(new string('-', 65));
+        sb.AppendLine($"  末尾 {resultsWithHoldout[0].Holdout!.TestCount} 日を除いた訓練区間でパラメータを推定し直し、末尾期間の発見数を予測して評価しています。");
+        sb.AppendLine("  （他のセクションの結果は全データで推定した最終結果です）");
+        sb.AppendLine();
+        sb.AppendLine($"{PadRightByWidth("モデル名", 28)} {PadLeftByWidth("予測発見数", 12)} {PadLeftByWidth("実測発見数", 12)} {PadLeftByWidth("誤差(%)", 10)} {PadLeftByWidth("日次MAE", 10)} {PadLeftByWidth("日次RMSE", 10)}");
+        sb.AppendLine(new string('-', 88));
         
-        foreach (var result in resultsWithHoldout.OrderBy(r => r.HoldoutMape ?? double.MaxValue))
+        foreach (var result in resultsWithHoldout.OrderBy(r => r.HoldoutAbsIncrementErrorPercent ?? double.MaxValue))
         {
-            string mapeStr = result.HoldoutMape.HasValue ? $"{result.HoldoutMape:F2}" : "-";
-            string mseStr = result.HoldoutMse.HasValue ? $"{result.HoldoutMse:F4}" : "-";
-            string maeStr = result.HoldoutMae.HasValue ? $"{result.HoldoutMae:F4}" : "-";
-            
-            sb.AppendLine($"{result.ModelName,-25} {mseStr,12} {maeStr,12} {mapeStr,12}");
+            var h = result.Holdout!;
+            string errStr = result.HoldoutIncrementErrorPercent.HasValue ? $"{result.HoldoutIncrementErrorPercent:+0.0;-0.0}" : "-";
+            sb.AppendLine($"{PadRightByWidth(result.ModelName, 28)} {h.PredictedIncrement,12:F1} {h.ActualIncrement,12:F0} {errStr,10} {h.DailyMae,10:F2} {h.DailyRmse,10:F2}");
         }
         sb.AppendLine();
-        sb.AppendLine("  * MAPE = Mean Absolute Percentage Error（平均絶対パーセント誤差）");
-        sb.AppendLine("  * 値が小さいほど予測精度が高い");
+        sb.AppendLine("  * 誤差 = (予測発見数 - 実測発見数) / 実測発見数。正は過大予測、負は過小予測");
+        sb.AppendLine("  * 日次MAE/RMSE = 日次発見数の予測誤差（件/日）");
         sb.AppendLine();
     }
     

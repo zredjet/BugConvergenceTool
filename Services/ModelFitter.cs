@@ -109,12 +109,9 @@ public class ModelFitter
                 }
             }
             
-            // 訓練データの決定（ホールドアウトの有無で切り替え）
-            double[] trainT = _splitResult?.TrainTimes ?? _tData;
-            double[] trainY = _splitResult?.TrainValues ?? _yData;
-            
-            // パラメータ推定
-            var parameters = EstimateParameters(model, trainT, trainY, lossFunction);
+            // パラメータ推定（最終結果は常に全データで推定する。
+            // ホールドアウト検証用の推定は PerformHoldoutValidation で訓練区間のみを使って別に行う）
+            var parameters = EstimateParameters(model, _tData, _yData, lossFunction);
             
             if (parameters == null)
             {
@@ -175,10 +172,10 @@ public class ModelFitter
                 result.ModelSelectionCriterion = "AIC";
             }
             
-            // ホールドアウト検証
+            // ホールドアウト検証（訓練区間のみで別途推定）
             if (_splitResult != null && _splitResult.IsValid)
             {
-                PerformHoldoutValidation(model, parameters, result);
+                PerformHoldoutValidation(model, lossFunction, result);
             }
             
             // 収束予測を計算
@@ -220,26 +217,35 @@ public class ModelFitter
     /// <summary>
     /// ホールドアウト検証を実行
     /// </summary>
-    private void PerformHoldoutValidation(ReliabilityGrowthModelBase model, double[] parameters, FittingResult result)
+    /// <remarks>
+    /// 訓練区間のみでパラメータを推定し直し、ホールドアウト期間の発見数（増分）を予測して評価する。
+    /// ここで得たパラメータは検証専用で、最終結果（全データで推定）には使わない。
+    /// </remarks>
+    private void PerformHoldoutValidation(ReliabilityGrowthModelBase model, ILossFunction lossFunction, FittingResult result)
     {
         if (_splitResult == null || !_splitResult.IsValid) return;
         
-        // テストデータに対する予測
-        var predictions = _splitResult.TestTimes.Select(t => model.Calculate(t, parameters)).ToArray();
+        var trainParameters = EstimateParameters(model, _splitResult.TrainTimes, _splitResult.TrainValues, lossFunction);
+        if (trainParameters == null)
+        {
+            result.Warnings.Add("ホールドアウト検証: 訓練区間でのパラメータ推定に失敗したため、検証できませんでした。");
+            return;
+        }
         
-        // 評価指標の計算
-        var validation = ValidationUtility.CalculateMetrics(predictions, _splitResult.TestValues);
+        var validation = ValidationUtility.CalculateIncrementMetrics(
+            _splitResult.TestTimes.Select(t => model.Calculate(t, trainParameters)).ToArray(),
+            model.Calculate(_splitResult.TrainTimes[^1], trainParameters),
+            _splitResult.TestValues,
+            _splitResult.TrainValues[^1]);
         
-        result.HoldoutMse = validation.Mse;
-        result.HoldoutMape = validation.Mape;
-        result.HoldoutMae = validation.Mae;
-        
-        // 警告を追加
+        result.Holdout = validation;
+        result.HoldoutTrainParameters = trainParameters;
         result.Warnings.AddRange(validation.Warnings);
         
         if (_verbose)
         {
-            Console.WriteLine($"    -> ホールドアウト検証: MSE={validation.Mse:F4}, MAPE={validation.Mape:F2}%");
+            Console.WriteLine($"    -> ホールドアウト検証: 期間発見数 予測={validation.PredictedIncrement:F1} 実測={validation.ActualIncrement:F0} " +
+                $"(誤差 {validation.IncrementErrorPercent:+0.0;-0.0}%), 日次MAE={validation.DailyMae:F2}");
         }
     }
     
@@ -440,10 +446,11 @@ public class ModelFitter
             result.Warnings.Add($"変化点の信頼性が{searchResult.ChangePointReliability}です。変化点なしのモデルも検討してください。");
         }
         
-        // ホールドアウト検証
+        // ホールドアウト検証（訓練区間のみで別途推定）
         if (_splitResult != null && _splitResult.IsValid)
         {
-            PerformHoldoutValidationForChangePoint(changePointModel, result);
+            var lossFunction = LossFunctionFactory.GetForModel(_lossType, changePointModel, out _, out _);
+            PerformHoldoutValidation(changePointModel, lossFunction, result);
         }
         
         // 収束予測を計算
@@ -480,33 +487,4 @@ public class ModelFitter
         return result;
     }
     
-    /// <summary>
-    /// 変化点モデル用のホールドアウト検証
-    /// </summary>
-    private void PerformHoldoutValidationForChangePoint(ChangePointModelBase model, FittingResult result)
-    {
-        if (_splitResult == null || !_splitResult.IsValid) return;
-        
-        // テストデータに対する予測（固定τモデルの予測値を使用）
-        var predictions = new double[_splitResult.TestTimes.Length];
-        for (int i = 0; i < _splitResult.TestTimes.Length; i++)
-        {
-            double t = _splitResult.TestTimes[i];
-            predictions[i] = model.Calculate(t, result.ParameterVector);
-        }
-        
-        // 評価指標の計算
-        var validation = ValidationUtility.CalculateMetrics(predictions, _splitResult.TestValues);
-        
-        result.HoldoutMse = validation.Mse;
-        result.HoldoutMape = validation.Mape;
-        result.HoldoutMae = validation.Mae;
-        
-        result.Warnings.AddRange(validation.Warnings);
-        
-        if (_verbose)
-        {
-            Console.WriteLine($"    -> ホールドアウト検証: MSE={validation.Mse:F4}, MAPE={validation.Mape:F2}%");
-        }
-    }
 }

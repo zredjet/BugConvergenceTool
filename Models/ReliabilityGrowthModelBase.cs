@@ -71,20 +71,34 @@ public class FittingResult
     public double[]? UpperConfidenceBounds { get; set; }
     
     // ホールドアウト検証結果（オプション）
-    /// <summary>
-    /// ホールドアウト検証の平均二乗誤差（MSE）
-    /// </summary>
-    public double? HoldoutMse { get; set; }
+    // 検証用パラメータは訓練区間のみで別途推定したもの。最終結果（Parameters・AIC・収束予測）は全データで推定する。
     
     /// <summary>
-    /// ホールドアウト検証の平均絶対パーセント誤差（MAPE）%
+    /// ホールドアウト検証の結果（未実施なら null）
     /// </summary>
-    public double? HoldoutMape { get; set; }
+    public Services.HoldoutValidationResult? Holdout { get; set; }
     
     /// <summary>
-    /// ホールドアウト検証の平均絶対誤差（MAE）
+    /// ホールドアウト検証用に訓練区間のみで推定したパラメータ
     /// </summary>
-    public double? HoldoutMae { get; set; }
+    public double[]? HoldoutTrainParameters { get; set; }
+    
+    /// <summary>
+    /// ホールドアウト期間の発見数の相対誤差（%、符号付き。正=過大予測）
+    /// </summary>
+    public double? HoldoutIncrementErrorPercent =>
+        Holdout != null && double.IsFinite(Holdout.IncrementErrorPercent) ? Holdout.IncrementErrorPercent : null;
+    
+    /// <summary>
+    /// ホールドアウト期間の日次増分の平均絶対誤差（件/日）
+    /// </summary>
+    public double? HoldoutDailyMae => Holdout?.DailyMae;
+    
+    /// <summary>
+    /// ホールドアウト予測誤差の大きさ（モデル間の順位付け用。期間増分の相対誤差の絶対値）
+    /// </summary>
+    public double? HoldoutAbsIncrementErrorPercent =>
+        HoldoutIncrementErrorPercent.HasValue ? Math.Abs(HoldoutIncrementErrorPercent.Value) : null;
     
     /// <summary>
     /// 使用した損失関数タイプ

@@ -346,7 +346,7 @@ class Program
         Console.WriteLine("\n=== モデル比較結果 ===\n");
         
         // ホールドアウト検証の有無を判定
-        bool hasHoldout = results.Any(r => r.HoldoutMse.HasValue);
+        bool hasHoldout = results.Any(r => r.Holdout != null);
         
         // カラム幅の定義
         const int colModel = 28;
@@ -363,7 +363,7 @@ class Program
             Console.WriteLine($"【比較グループ: {group}】{ModelComparisonGroup.Describe(group)}");
             
             string header = $"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {"R²",colNum} {criterionName,colNum} {"Δ" + criterionName,colNum}";
-            if (hasHoldout) header += $" {"MAPE(%)",colNum}";
+            if (hasHoldout) header += $" {"HO誤差(%)",colNum}";
             header += $" {"潜在バグ",colNum}";
             if (verbose) header += $" {"時間(ms)",colNum}";
             Console.WriteLine(header);
@@ -380,7 +380,7 @@ class Program
                 
                 string modelNameWithMarker = result.ModelName + (isBest ? " *" : "");
                 string line = $"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.SelectionScore,colNum:F2} {result.SelectionScore - minScore,colNum:F2}";
-                if (hasHoldout) line += $" {(result.HoldoutMape.HasValue ? $"{result.HoldoutMape:F2}" : "-"),colNum}";
+                if (hasHoldout) line += $" {(result.HoldoutIncrementErrorPercent.HasValue ? $"{result.HoldoutIncrementErrorPercent:+0.0;-0.0}" : "-"),colNum}";
                 line += $" {result.EstimatedTotalBugs,colNum:F1}";
                 if (verbose) line += $" {result.OptimizationTimeMs,colNum}";
                 Console.WriteLine(line);
@@ -402,20 +402,32 @@ class Program
         if (hasHoldout)
         {
             Console.WriteLine("\n=== ホールドアウト検証結果 ===\n");
-            var bestByMape = results.Where(r => r.Success && r.HoldoutMape.HasValue)
-                                    .OrderBy(r => r.HoldoutMape!.Value)
-                                    .FirstOrDefault();
-            if (bestByMape != null)
+            Console.WriteLine("  HO誤差 = 末尾期間の発見数について（訓練区間のみで推定したモデルの予測 - 実測）/ 実測。正は過大予測");
+            Console.WriteLine("  ※ 表の他の列（AIC・潜在バグ等）は全データで推定した最終結果です");
+            
+            var bestHoldout = results.Where(r => r.Success && r.HoldoutAbsIncrementErrorPercent.HasValue)
+                                     .OrderBy(r => r.HoldoutAbsIncrementErrorPercent!.Value)
+                                     .FirstOrDefault();
+            if (bestHoldout != null)
             {
-                Console.WriteLine($"予測精度最良モデル（MAPE最小）: {bestByMape.ModelName} (MAPE={bestByMape.HoldoutMape:F2}%)");
+                var h = bestHoldout.Holdout!;
+                Console.WriteLine($"\n予測精度最良モデル（HO誤差の絶対値最小）: {bestHoldout.ModelName} " +
+                    $"(予測 {h.PredictedIncrement:F1} 件 / 実測 {h.ActualIncrement:F0} 件, 誤差 {h.IncrementErrorPercent:+0.0;-0.0}%)");
+            }
+            if (bestResult.Holdout != null)
+            {
+                var h = bestResult.Holdout;
+                Console.WriteLine($"推奨モデル {bestResult.ModelName}: 予測 {h.PredictedIncrement:F1} 件 / 実測 {h.ActualIncrement:F0} 件" +
+                    (double.IsFinite(h.IncrementErrorPercent) ? $", 誤差 {h.IncrementErrorPercent:+0.0;-0.0}%" : "") +
+                    $", 日次MAE {h.DailyMae:F2} 件/日");
             }
             
             // 警告の表示
-            var modelsWithHighMape = results.Where(r => r.Success && r.HoldoutMape > 50).ToList();
-            if (modelsWithHighMape.Any())
+            var modelsWithHighError = results.Where(r => r.Success && r.HoldoutAbsIncrementErrorPercent > WarningService.Thresholds.HighHoldoutError).ToList();
+            if (modelsWithHighError.Any())
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"注意: {modelsWithHighMape.Count}個のモデルでMAPE > 50%（予測精度が低い可能性）");
+                Console.WriteLine($"注意: {modelsWithHighError.Count}個のモデルでHO誤差の絶対値 > {WarningService.Thresholds.HighHoldoutError:F0}%（予測精度が低い可能性）");
                 Console.ResetColor();
             }
         }
@@ -801,7 +813,8 @@ class Program
         Console.WriteLine("                          mle - 最尤推定（Poisson-NHPP、デフォルト）");
         Console.WriteLine("                          sse - 残差二乗和（従来方式。AIC によるモデル選択は不正確）");
         Console.WriteLine("  --holdout-days N      末尾N日をホールドアウト検証に使用");
-        Console.WriteLine("                        （訓練データで推定し、テストデータで予測精度を評価）");
+        Console.WriteLine("                        （末尾を除いた訓練区間で別途推定し、末尾期間の発見数の予測誤差を評価。");
+        Console.WriteLine("                          最終結果は全データで推定）");
         Console.WriteLine();
         Console.WriteLine("統計診断オプション:");
         Console.WriteLine("  -d, --diagnostics     残差診断・適合度検定を実行");
