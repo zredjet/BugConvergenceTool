@@ -6,7 +6,10 @@ namespace BugConvergenceTool.Services;
 /// <summary>
 /// 点推定と区間
 /// </summary>
-public sealed record IntervalEstimate(double Estimate, double Lower, double Upper);
+/// <param name="UpperIsBoundLimited">
+/// 上限が探索範囲の上限で決まっており、実際の上限はこれ以上でありうる（表示は「≥」）
+/// </param>
+public sealed record IntervalEstimate(double Estimate, double Lower, double Upper, bool UpperIsBoundLimited = false);
 
 /// <summary>
 /// 収束マイルストーン（x% 発見日）の区間
@@ -16,7 +19,9 @@ public sealed record IntervalEstimate(double Estimate, double Lower, double Uppe
 /// <param name="LowerDay">区間の下限（日）</param>
 /// <param name="UpperDay">区間の上限（日）。到達しない反復が上側の分位を超える場合は +∞</param>
 /// <param name="UnreachableFraction">探索範囲内で到達しなかった反復の割合</param>
-public sealed record MilestoneInterval(double Ratio, double EstimateDay, double LowerDay, double UpperDay, double UnreachableFraction);
+/// <param name="UpperIsBoundLimited">上限が探索範囲の上限（a の張り付き）で決まっており、実際はこれ以上でありうる</param>
+public sealed record MilestoneInterval(double Ratio, double EstimateDay, double LowerDay, double UpperDay, double UnreachableFraction,
+    bool UpperIsBoundLimited = false);
 
 /// <summary>
 /// 予測区間の計算結果
@@ -42,6 +47,9 @@ public sealed class PredictionIntervalResult
 
     /// <summary>将来の累積発見数の予測区間（上限）</summary>
     public double[] Upper { get; init; } = Array.Empty<double>();
+
+    /// <summary>各日の上限が探索範囲の上限（a の張り付き）で決まっているか</summary>
+    public bool[] UpperIsBoundLimited { get; init; } = Array.Empty<bool>();
 
     /// <summary>推定潜在バグ総数 m(∞) の信頼区間（パラメータ不確実性）</summary>
     public IntervalEstimate? TotalBugs { get; init; }
@@ -103,6 +111,8 @@ public class PredictionIntervalService
         }
 
         double qLow = (1 - confidenceLevel) / 2, qHigh = 1 - qLow;
+        bool boundLimited = bootstrap.IsUpperLimitedByBound(qHigh);
+        if (bootstrap.BoundWarning(qHigh) is { } boundWarning) warnings.Add(boundWarning);
         double tEnd = tData[^1];
         double yEnd = yData[^1];
         var futureTimes = Enumerable.Range(1, horizonDays).Select(d => tEnd + d).ToArray();
@@ -136,6 +146,7 @@ public class PredictionIntervalService
 
         var lower = new double[horizonDays];
         var upper = new double[horizonDays];
+        var upperLimited = new bool[horizonDays];
         var point = new double[horizonDays];
         double mEnd = model.Calculate(tEnd, estimate);
         for (int d = 0; d < horizonDays; d++)
@@ -143,6 +154,7 @@ public class PredictionIntervalService
             var sorted = paths.Select(path => path[d]).OrderBy(v => v).ToList();
             lower[d] = ParametricBootstrap.Percentile(sorted, qLow);
             upper[d] = ParametricBootstrap.Percentile(sorted, qHigh);
+            upperLimited[d] = boundLimited && AnyBoundReplicateInUpperTail(paths.Select(path => path[d]).ToList(), bootstrap.AtUpperBound, upper[d]);
             point[d] = yEnd + model.Calculate(futureTimes[d], estimate) - mEnd;
         }
 
@@ -159,12 +171,13 @@ public class PredictionIntervalService
             PointForecast = point,
             Lower = lower,
             Upper = upper,
+            UpperIsBoundLimited = upperLimited,
             TotalBugs = new IntervalEstimate(estimateTotal,
-                ParametricBootstrap.Percentile(totals, qLow), ParametricBootstrap.Percentile(totals, qHigh)),
+                ParametricBootstrap.Percentile(totals, qLow), ParametricBootstrap.Percentile(totals, qHigh), boundLimited),
             RemainingBugs = new IntervalEstimate(Math.Max(0, estimateTotal - mEnd),
-                ParametricBootstrap.Percentile(remainingSorted, qLow), ParametricBootstrap.Percentile(remainingSorted, qHigh)),
+                ParametricBootstrap.Percentile(remainingSorted, qLow), ParametricBootstrap.Percentile(remainingSorted, qHigh), boundLimited),
             Milestones = MilestoneRatios
-                .Select(ratio => CalculateMilestone(model, estimate, replicates, ratio, qLow, qHigh))
+                .Select(ratio => CalculateMilestone(model, estimate, bootstrap, ratio, qLow, qHigh))
                 .ToList(),
             Warnings = warnings
         };
@@ -174,18 +187,35 @@ public class PredictionIntervalService
     /// ブートストラップの θ* から、発見率 ratio に到達する日の区間を求める
     /// </summary>
     public static MilestoneInterval CalculateMilestone(
-        ReliabilityGrowthModelBase model, double[] estimate, IReadOnlyList<double[]> replicates,
+        ReliabilityGrowthModelBase model, double[] estimate, ParametricBootstrapResult bootstrap,
         double ratio, double qLow, double qHigh)
     {
         // 到達しない反復は +∞ として分位点に含める（除外すると区間が楽観側に偏る）
-        var days = replicates.Select(p => model.DayForRatio(ratio, p)).OrderBy(v => v).ToList();
+        var unsorted = bootstrap.Replicates.Select(p => model.DayForRatio(ratio, p)).ToList();
+        var days = unsorted.OrderBy(v => v).ToList();
         double unreachable = days.Count(double.IsPositiveInfinity) / (double)days.Count;
+        double upper = QuantileWithInfinity(days, qHigh);
+        // a が上限に張り付いた反復は総数が過小なので、到達日も過小（早すぎる）になりうる
+        bool upperLimited = double.IsFinite(upper) && bootstrap.IsUpperLimitedByBound(qHigh)
+                            && AnyBoundReplicateInUpperTail(unsorted, bootstrap.AtUpperBound, upper);
         return new MilestoneInterval(
             ratio,
             model.DayForRatio(ratio, estimate),
             QuantileWithInfinity(days, qLow),
-            QuantileWithInfinity(days, qHigh),
-            unreachable);
+            upper,
+            unreachable,
+            upperLimited);
+    }
+
+    /// <summary>
+    /// a が上限に張り付いた反復のうち、値が上側の分位点以上のものがあるか
+    /// （張り付いた反復が上側の裾にいなければ、その時点の上限は探索範囲の影響を受けていない）
+    /// </summary>
+    internal static bool AnyBoundReplicateInUpperTail(IReadOnlyList<double> values, IReadOnlyList<bool> atUpperBound, double upper)
+    {
+        for (int i = 0; i < values.Count && i < atUpperBound.Count; i++)
+            if (atUpperBound[i] && values[i] >= upper) return true;
+        return false;
     }
 
     /// <summary>

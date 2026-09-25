@@ -467,7 +467,7 @@ class Program
         // 収束予測
         Console.WriteLine($"\n=== 収束予測（{bestResult.ModelName}）===\n");
         
-        Console.WriteLine($"推定潜在バグ総数: {bestResult.EstimatedTotalBugs:F1} 件");
+        Console.WriteLine($"{bestResult.Model?.TotalBugsLabel ?? "推定潜在バグ総数"}: {bestResult.EstimatedTotalBugs:F1} 件");
         Console.WriteLine($"残り推定バグ数: {bestResult.EstimatedTotalBugs - testData.CurrentCumulativeBugs:F1} 件");
         Console.WriteLine($"使用損失関数: {bestResult.LossFunctionUsed}");
         if (bestResult.Stability is { } stability)
@@ -595,15 +595,21 @@ class Program
         double level = bootstrapSettings.ConfidenceLevel;
         var model = bestResult.Model!;
         
-        // 工数データ（TEF）は外生の説明変数なので固定したまま発見数だけを再生成できるが、
+        // 工数データ（TEF）は発見数と同時に（正規分布の尤度で）推定しているので、工数も再生成する。
         // 修正数（FRE）は発見数と同時に推定するため、発見数だけの再生成では整合しない
         if (bestResult.ComparisonGroup != ModelComparisonGroup.DetectionAndCorrection)
         {
             Console.WriteLine($"パラメトリック・ブートストラップで{level * 100:F0}%区間を計算中（{iterations}回）...");
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             var bootstrap = ParametricBootstrap.Run(
-                model, tData, bestResult.ParameterVector, fitter.CreateRefitFunction(model), iterations, seed);
+                model, tData, bestResult.ParameterVector, fitter.CreateBootstrapRefitFunction(model), iterations, seed);
             Console.WriteLine($"  再推定の成功 {bootstrap.Succeeded}/{bootstrap.Requested}（{stopwatch.Elapsed.TotalSeconds:F1}秒）");
+            if (bootstrap.EffortResimulated)
+                Console.WriteLine("  工数データも推定した工数関数から再生成しました（工数の不確実性を区間に含めます）。");
+            
+            // a が探索範囲の上限に張り付いた反復の注意は、最終的な警告の一覧にも載せる
+            if (bootstrap.BoundWarning(1 - (1 - level) / 2) is { } boundWarning && bootstrap.IsUpperLimitedByBound(1 - (1 - level) / 2))
+                bestResult.Warnings.Add(boundWarning);
             
             // 予測期間: 観測期間と同じ長さ（14〜180日）
             int horizon = Math.Clamp(dayCount, 14, 180);
@@ -654,7 +660,7 @@ class Program
         if (band.Succeeded == 0) return;
         
         if (band.TotalBugs != null)
-            Console.WriteLine($"  推定潜在バグ総数: {band.TotalBugs.Estimate:F1} 件  [{band.TotalBugs.Lower:F1}, {band.TotalBugs.Upper:F1}]");
+            Console.WriteLine($"  {IntervalFormatter.EstimateLine(bestResult.Model!.TotalBugsLabel, band.TotalBugs)}");
         PrintMilestones(band.Milestones);
         Console.WriteLine("  ※ パラメータ推定の不確実性のみ。将来の観測値のばらつきを含む区間は --pi で計算します。");
     }
@@ -687,7 +693,7 @@ class Program
         var total = bestResult.TotalBugsFisherInterval;
         if (total != null && total.IsValid)
         {
-            Console.WriteLine($"\n  {IntervalFormatter.FisherTotalBugsLine(total)}");
+            Console.WriteLine($"\n  {IntervalFormatter.FisherTotalBugsLine(total, bestResult.Model!.TotalBugsLabel)}");
         }
         Console.WriteLine("  ※ 漸近近似。パラメータが探索範囲の境界にある場合やデータが少ない場合は不正確です。");
     }
@@ -712,9 +718,9 @@ class Program
         // 総数・収束日の区間は --ci と同じ値になるため、--ci の場合はそちらに表示する
         bool shownInConfidenceBand = bestResult.ConfidenceBand?.Succeeded > 0;
         if (pi.TotalBugs != null && !shownInConfidenceBand)
-            Console.WriteLine($"  推定潜在バグ総数: {pi.TotalBugs.Estimate:F1} 件  [{pi.TotalBugs.Lower:F1}, {pi.TotalBugs.Upper:F1}]（信頼区間）");
+            Console.WriteLine($"  {IntervalFormatter.EstimateLine(bestResult.Model!.TotalBugsLabel, pi.TotalBugs, suffix: "（信頼区間）")}");
         if (pi.RemainingBugs != null)
-            Console.WriteLine($"  今後発見される件数: {pi.RemainingBugs.Estimate:F1} 件  [{pi.RemainingBugs.Lower:F0}, {pi.RemainingBugs.Upper:F0}]（予測区間）");
+            Console.WriteLine($"  {IntervalFormatter.EstimateLine("今後発見される件数", pi.RemainingBugs, "F0", "（予測区間）")}");
         if (!shownInConfidenceBand)
             PrintMilestones(pi.Milestones);
         
@@ -724,7 +730,7 @@ class Program
         for (int d = step - 1; d < pi.FutureTimes.Length; d += step)
         {
             string date = testData.DateForDay(pi.FutureTimes[d])?.ToString("yyyy/MM/dd") ?? "-";
-            Console.WriteLine($"    {pi.FutureTimes[d],6:F0} {date,12} {pi.PointForecast[d],8:F1} {pi.Lower[d],8:F0} {pi.Upper[d],8:F0}");
+            Console.WriteLine($"    {pi.FutureTimes[d],6:F0} {date,12} {pi.PointForecast[d],8:F1} {pi.Lower[d],8:F0} {IntervalFormatter.Upper(pi.Upper[d], pi.UpperIsBoundLimited.ElementAtOrDefault(d), "F0"),8}");
         }
     }
     

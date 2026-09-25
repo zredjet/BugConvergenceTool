@@ -237,6 +237,11 @@ public abstract class ReliabilityGrowthModelBase
     }
 
     /// <summary>
+    /// m(∞)（<see cref="GetAsymptoticTotalBugs"/>）の表示名
+    /// </summary>
+    public virtual string TotalBugsLabel => "推定潜在バグ総数";
+
+    /// <summary>
     /// パラメータ index の境界 bound が、別のモデルに一致するなどの「自然な境界」か
     /// </summary>
     /// <remarks>

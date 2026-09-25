@@ -180,7 +180,9 @@ public class ExcelWriter
         ws.Cell("B21").Value = bestResult.MSE;
         ws.Cell("B22").Value = bestResult.AIC;
         
-        // 推定結果
+        // 推定結果（有限工数の TEF モデルの m(∞) は「推定総工数で見つかるバグ数」なので見出しも変える）
+        if (bestResult.Model is { } bestModel && bestModel.TotalBugsLabel != new ExponentialModel().TotalBugsLabel)
+            ws.Cell("A25").Value = bestModel.TotalBugsLabel;
         ws.Cell("B25").Value = bestResult.EstimatedTotalBugs;
         ws.Cell("B26").Value = DetectionRateCell(bestResult);
         ws.Cell("B27").Value = bestResult.EstimatedTotalBugs - _testData.CurrentCumulativeBugs;
@@ -312,7 +314,7 @@ public class ExcelWriter
         ws.Cell(1, 1).Value = "日数";
         ws.Cell(1, 2).Value = "実績（累積バグ）";
         ws.Cell(1, 3).Value = "予測値";
-        ws.Cell(1, 4).Value = "潜在バグ総数";
+        ws.Cell(1, 4).Value = bestResult.Model?.TotalBugsLabel.Replace("推定", "") ?? "潜在バグ総数";
         ws.Cell(1, 5).Value = "残存バグ予測";
         
         ws.Range(1, 1, 1, 5).Style.Font.Bold = true;

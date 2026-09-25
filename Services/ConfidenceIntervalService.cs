@@ -27,6 +27,9 @@ public sealed class ConfidenceBandResult
     /// <summary>m(t) の信頼区間の上限</summary>
     public double[] Upper { get; init; } = Array.Empty<double>();
     
+    /// <summary>各時刻の上限が探索範囲の上限（a の張り付き）で決まっているか</summary>
+    public bool[] UpperIsBoundLimited { get; init; } = Array.Empty<bool>();
+    
     /// <summary>推定潜在バグ総数 m(∞) の信頼区間</summary>
     public IntervalEstimate? TotalBugs { get; init; }
     
@@ -78,13 +81,18 @@ public class ConfidenceIntervalService
         }
         
         double qLow = (1 - confidenceLevel) / 2, qHigh = 1 - qLow;
+        bool boundLimited = bootstrap.IsUpperLimitedByBound(qHigh);
+        if (bootstrap.BoundWarning(qHigh) is { } boundWarning) warnings.Add(boundWarning);
         var lower = new double[times.Length];
         var upper = new double[times.Length];
+        var upperLimited = new bool[times.Length];
         for (int i = 0; i < times.Length; i++)
         {
-            var sorted = replicates.Select(p => model.Calculate(times[i], p)).Where(double.IsFinite).OrderBy(v => v).ToList();
+            var values = replicates.Select(p => model.Calculate(times[i], p)).ToList();
+            var sorted = values.Where(double.IsFinite).OrderBy(v => v).ToList();
             lower[i] = ParametricBootstrap.Percentile(sorted, qLow);
             upper[i] = ParametricBootstrap.Percentile(sorted, qHigh);
+            upperLimited[i] = boundLimited && PredictionIntervalService.AnyBoundReplicateInUpperTail(values, bootstrap.AtUpperBound, upper[i]);
         }
         
         var totals = replicates.Select(model.GetAsymptoticTotalBugs).Where(double.IsFinite).OrderBy(v => v).ToList();
@@ -98,10 +106,11 @@ public class ConfidenceIntervalService
             Estimate = times.Select(t => model.Calculate(t, estimate)).ToArray(),
             Lower = lower,
             Upper = upper,
+            UpperIsBoundLimited = upperLimited,
             TotalBugs = new IntervalEstimate(model.GetAsymptoticTotalBugs(estimate),
-                ParametricBootstrap.Percentile(totals, qLow), ParametricBootstrap.Percentile(totals, qHigh)),
+                ParametricBootstrap.Percentile(totals, qLow), ParametricBootstrap.Percentile(totals, qHigh), boundLimited),
             Milestones = PredictionIntervalService.MilestoneRatios
-                .Select(ratio => PredictionIntervalService.CalculateMilestone(model, estimate, replicates, ratio, qLow, qHigh))
+                .Select(ratio => PredictionIntervalService.CalculateMilestone(model, estimate, bootstrap, ratio, qLow, qHigh))
                 .ToList(),
             Warnings = warnings
         };

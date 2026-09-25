@@ -76,6 +76,24 @@ public abstract class TEFBasedModelBase : ReliabilityGrowthModelBase
     }
     
     /// <summary>
+    /// 有限工数関数（W(∞) = N）では m(∞) は潜在バグ総数ではなく「推定した総工数 N を使い切るまでに見つかる数」
+    /// </summary>
+    public override string TotalBugsLabel =>
+        double.IsFinite(_tef.CalculateTotalEffort(Enumerable.Repeat(1.0, _tef.ParameterNames.Length).ToArray()))
+            ? "推定総工数で見つかるバグ数"
+            : base.TotalBugsLabel;
+    
+    /// <summary>
+    /// 工数データを差し替えた複製（ブートストラップで工数も再生成するときに、共有のモデルを書き換えないため）
+    /// </summary>
+    public TEFBasedModelBase WithEffortData(double[] effortData)
+    {
+        var clone = (TEFBasedModelBase)MemberwiseClone();
+        clone.ObservedEffortData = effortData;
+        return clone;
+    }
+    
+    /// <summary>
     /// TEFパラメータの初期値/境界用のデータを取得
     /// </summary>
     /// <remarks>

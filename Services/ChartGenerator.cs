@@ -231,7 +231,8 @@ public class ChartGenerator
         // 5. 潜在バグ総数ライン
         double totalBugs = result.EstimatedTotalBugs;
         var totalLine = plt.Add.HorizontalLine(totalBugs);
-        totalLine.LegendText = $"推定潜在バグ総数 ({totalBugs:F0})";
+        string totalLabel = result.Model?.TotalBugsLabel ?? "推定潜在バグ総数";
+        totalLine.LegendText = $"{totalLabel} ({totalBugs:F0})";
         totalLine.LineWidth = 1;
         totalLine.Color = Colors.Gray;
         totalLine.LineStyle.Pattern = LinePattern.Dotted;
@@ -245,7 +246,7 @@ public class ChartGenerator
         string annotation = $"R² = {result.R2:F4}\n推定残バグ: {totalBugs - actualBugs.Last():F1}";
         if (band?.TotalBugs != null)
         {
-            annotation += $"\n潜在バグ総数 {band.ConfidenceLevel:P0}区間: [{band.TotalBugs.Lower:F0}, {band.TotalBugs.Upper:F0}]";
+            annotation += $"\n{totalLabel} {band.ConfidenceLevel:P0}区間: [{band.TotalBugs.Lower:F0}, {IntervalFormatter.Upper(band.TotalBugs.Upper, band.TotalBugs.UpperIsBoundLimited, "F0")}]";
         }
         plt.Add.Annotation(annotation, Alignment.UpperLeft);
         

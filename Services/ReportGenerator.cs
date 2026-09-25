@@ -190,7 +190,7 @@ public class ReportGenerator
         // 推定結果
         var assessment = ConvergenceAssessment.Evaluate(cumulativeFound.Last(), bestResult.EstimatedTotalBugs);
         sb.AppendLine("  推定結果:");
-        sb.AppendLine($"    推定潜在バグ総数:   {bestResult.EstimatedTotalBugs:F1} 件");
+        sb.AppendLine($"    {bestResult.Model?.TotalBugsLabel ?? "推定潜在バグ総数"}:   {bestResult.EstimatedTotalBugs:F1} 件");
         sb.AppendLine($"    現在の発見率:       {ConvergenceAssessment.FormatRatio(assessment.Ratio)}");
         sb.AppendLine($"    残り推定バグ数:     {bestResult.EstimatedTotalBugs - cumulativeFound.Last():F1} 件");
         sb.AppendLine();
@@ -324,7 +324,7 @@ public class ReportGenerator
             if (band.Succeeded > 0)
             {
                 if (band.TotalBugs != null)
-                    sb.AppendLine($"  推定潜在バグ総数:   {band.TotalBugs.Estimate:F1} 件  [{band.TotalBugs.Lower:F1}, {band.TotalBugs.Upper:F1}]");
+                    sb.AppendLine($"  {IntervalFormatter.EstimateLine(bestResult.Model!.TotalBugsLabel, band.TotalBugs)}");
                 AppendMilestones(sb, band.Milestones);
                 sb.AppendLine("  ※ パラメータ推定の不確実性のみ。m(t) の区間はグラフ（reliability_growth.png）に描画しています。");
             }
@@ -345,7 +345,7 @@ public class ReportGenerator
             var total = bestResult.TotalBugsFisherInterval;
             if (total != null && total.IsValid)
             {
-                sb.AppendLine($"  {IntervalFormatter.FisherTotalBugsLine(total)}");
+                sb.AppendLine($"  {IntervalFormatter.FisherTotalBugsLine(total, bestResult.Model!.TotalBugsLabel)}");
             }
             sb.AppendLine("  ※ 漸近近似。パラメータが探索範囲の境界にある場合やデータが少ない場合は不正確です。");
             sb.AppendLine();
@@ -366,9 +366,9 @@ public class ReportGenerator
                 // 総数・収束日の区間は信頼区間と同じ値なので、信頼区間を出力済みなら省略する
                 bool shownInBand = band?.Succeeded > 0;
                 if (pi.TotalBugs != null && !shownInBand)
-                    sb.AppendLine($"  推定潜在バグ総数:   {pi.TotalBugs.Estimate:F1} 件  [{pi.TotalBugs.Lower:F1}, {pi.TotalBugs.Upper:F1}]（信頼区間）");
+                    sb.AppendLine($"  {IntervalFormatter.EstimateLine(bestResult.Model!.TotalBugsLabel, pi.TotalBugs, suffix: "（信頼区間）")}");
                 if (pi.RemainingBugs != null)
-                    sb.AppendLine($"  今後発見される件数: {pi.RemainingBugs.Estimate:F1} 件  [{pi.RemainingBugs.Lower:F0}, {pi.RemainingBugs.Upper:F0}]（予測区間）");
+                    sb.AppendLine($"  {IntervalFormatter.EstimateLine("今後発見される件数", pi.RemainingBugs, "F0", "（予測区間）")}");
                 if (!shownInBand)
                     AppendMilestones(sb, pi.Milestones);
                 sb.AppendLine();
@@ -377,7 +377,7 @@ public class ReportGenerator
                 for (int d = 0; d < pi.FutureTimes.Length; d++)
                 {
                     string date = _testData.DateForDay(pi.FutureTimes[d])?.ToString("yyyy/MM/dd") ?? "-";
-                    sb.AppendLine($"    {pi.FutureTimes[d],6:F0} {date,12} {pi.PointForecast[d],8:F1} {pi.Lower[d],8:F0} {pi.Upper[d],8:F0}");
+                    sb.AppendLine($"    {pi.FutureTimes[d],6:F0} {date,12} {pi.PointForecast[d],8:F1} {pi.Lower[d],8:F0} {IntervalFormatter.Upper(pi.Upper[d], pi.UpperIsBoundLimited.ElementAtOrDefault(d), "F0"),8}");
                 }
             }
             sb.AppendLine();

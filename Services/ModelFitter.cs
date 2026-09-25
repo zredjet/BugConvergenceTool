@@ -575,6 +575,23 @@ public class ModelFitter
     }
 
     /// <summary>
+    /// ブートストラップの合成データ（発見数と、TEF モデルでは工数）を受け取り、本推定と同じ手順で推定し直す関数を返す
+    /// </summary>
+    /// <remarks>
+    /// 工数も再生成した場合は、工数を差し替えたモデルの複製で推定する（並列実行中に共有のモデルを書き換えないため）。
+    /// </remarks>
+    public Func<BootstrapSample, double[]?> CreateBootstrapRefitFunction(ReliabilityGrowthModelBase model)
+    {
+        var loss = LossFunctionFactory.GetForModel(_lossType, model, out _, out _);
+        bool useProfileLikelihood = UseProfileLikelihoodForChangePoints;
+        return sample =>
+        {
+            var target = sample.Effort != null && model is TEFBasedModelBase tef ? tef.WithEffortData(sample.Effort) : model;
+            return Estimate(target, _tData, sample.Y, loss, allowParallel: false, useProfileLikelihood)?.Parameters;
+        };
+    }
+
+    /// <summary>
     /// 推定結果
     /// </summary>
     private sealed record EstimationOutcome(
