@@ -148,13 +148,19 @@ public class GWOOptimizer : IOptimizer
                 result.ConvergenceHistory.Add(alphaFitness);
                 
                 // 収束判定（相対収束）
+                // GWO は係数 a を 2→0 に減らして大域探索から局所探索に移る。a ≥ 1 の間は群れが
+                // リーダーから離れる方向にも動く探索段階で最良値が停滞しやすいため、停滞による打ち切りは
+                // 局所探索段階（a < 1、反復の後半）に入ってからだけ行う（以前は探索段階で打ち切られていた）
                 double relativeChange = Math.Abs(previousBest - alphaFitness) / 
                                         (Math.Abs(previousBest) + 1e-10);
-                if (relativeChange < _tolerance)
+                if (relativeChange < _tolerance && a < 1.0)
                 {
                     stagnationCount++;
                     if (stagnationCount > 50)
+                    {
+                        result.Converged = true;
                         break;
+                    }
                 }
                 else
                 {
@@ -168,7 +174,7 @@ public class GWOOptimizer : IOptimizer
             result.Parameters = (double[])alpha.Clone();
             result.ObjectiveValue = alphaFitness;
             result.FunctionEvaluations = evaluations;
-            result.Success = !double.IsNaN(alphaFitness) && !double.IsInfinity(alphaFitness);
+            result.Success = OptimizationResult.IsValidObjective(alphaFitness);
         }
         catch (Exception ex)
         {

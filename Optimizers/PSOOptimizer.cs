@@ -177,7 +177,10 @@ public class PSOOptimizer : IOptimizer
                 {
                     stagnationCount++;
                     if (stagnationCount > 50)
+                    {
+                        result.Converged = true;
                         break;
+                    }
                 }
                 else
                 {
@@ -191,7 +194,7 @@ public class PSOOptimizer : IOptimizer
             result.Parameters = globalBestPosition;
             result.ObjectiveValue = globalBestFitness;
             result.FunctionEvaluations = evaluations;
-            result.Success = !double.IsNaN(globalBestFitness) && !double.IsInfinity(globalBestFitness);
+            result.Success = OptimizationResult.IsValidObjective(globalBestFitness);
         }
         catch (Exception ex)
         {

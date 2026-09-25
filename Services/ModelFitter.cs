@@ -152,6 +152,11 @@ public class ModelFitter
                 result.Warnings.Add($"マルチスタート最適化で最良解に収束した開始点が {result.StartsConvergedToBest}/{result.OptimizationStarts} と少なく、解が初期点に依存している可能性があります。");
             }
 
+            if (estimation.Optimization is { Converged: false } optimization)
+            {
+                result.Warnings.Add($"最適化（{optimization.AlgorithmName}）が収束判定を満たす前に最大反復回数に達しました。推定値が最適でない可能性があります。");
+            }
+            
             result.ChangePointSearchResult = estimation.ChangePointSearch;
             if (estimation.ChangePointSearch != null)
             {
@@ -518,8 +523,11 @@ public class ModelFitter
             && model is ChangePointModelBase changePointModel
             && FixedTauChangePointModel.Supports(changePointModel))
         {
+            // τ を固定した部分問題は滑らかな低次元問題なので、局所最適化の Nelder-Mead で十分に解ける
+            // （GO・変化点の合成データ 48 件で DE と同じ最良値に到達し、約 7 倍速い）。
+            // ブートストラップや尤度比検定では部分問題を数千回解くため、ここは指定された最適化手法によらず固定する
             var detector = new RobustChangePointDetector(
-                optimizerType: _optimizerType == OptimizerType.AutoSelect ? OptimizerType.DifferentialEvolution : _optimizerType,
+                optimizerType: OptimizerType.NelderMead,
                 lossType: _lossType,
                 verbose: _verbose && allowParallel)
             {
