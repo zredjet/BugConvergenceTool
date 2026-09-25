@@ -224,7 +224,7 @@ class Program
                     Console.WriteLine($"【適合度検定】{bestResult.GoodnessOfFit.OverallAssessment}");
                     Console.WriteLine(double.IsFinite(bestResult.GoodnessOfFit.ChiSquarePValue)
                         ? $"  χ²検定: χ²={bestResult.GoodnessOfFit.ChiSquareStatistic:F2} (df={bestResult.GoodnessOfFit.ChiSquareDegreesOfFreedom}, p={bestResult.GoodnessOfFit.ChiSquarePValue:F4})"
-                        : $"  χ²検定: 自由度が残らないため検定できません（ビン数 {bestResult.GoodnessOfFit.NumberOfBins} ≤ パラメータ数）");
+                        : $"  χ²検定: {bestResult.GoodnessOfFit.ChiSquareInterpretation}");
                     Console.WriteLine($"  KS検定: D={bestResult.GoodnessOfFit.KsStatistic:F4} (p={bestResult.GoodnessOfFit.KsPValue:F4})");
                     Console.WriteLine($"  CvM検定: W²={bestResult.GoodnessOfFit.CramerVonMisesStatistic:F4} (p={bestResult.GoodnessOfFit.CramerVonMisesPValue:F4})");
                     Console.WriteLine($"    （KS・CvM の p 値: {bestResult.GoodnessOfFit.EdfPValueMethod}）");
@@ -582,7 +582,7 @@ class Program
         var model = bestResult.Model!;
         var service = new FisherInformationService(confidenceLevel);
         var fisher = service.CalculateNHPPStandardErrors(
-            model, tData, yData, bestResult.ParameterVector, FisherInformationService.ChangePointMask(model));
+            model, tData, yData, bestResult.ParameterVector, FisherInformationService.DetectionLikelihoodMask(model));
         bestResult.FisherInformation = fisher;
         if (fisher.Success && fisher.CovarianceMatrix != null)
         {

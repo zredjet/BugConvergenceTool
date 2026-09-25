@@ -161,7 +161,7 @@ public class GWOOptimizer : IOptimizer
             // α から Nelder-Mead で局所的に仕上げ、収束の判定もその結果に従う
             if (!result.Converged && OptimizationResult.IsValidObjective(alphaFitness))
             {
-                var polish = new NelderMeadOptimizer().Optimize(objectiveFunction, lowerBounds, upperBounds, alpha);
+                var polish = OptimizerFactory.Create(OptimizerType.NelderMead).Optimize(objectiveFunction, lowerBounds, upperBounds, alpha);
                 evaluations += polish.FunctionEvaluations;
                 if (polish.Success && polish.ObjectiveValue <= alphaFitness)
                 {

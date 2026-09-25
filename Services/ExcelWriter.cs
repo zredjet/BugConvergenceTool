@@ -181,7 +181,7 @@ public class ExcelWriter
         ws.Cell("B22").Value = bestResult.AIC;
         
         // 推定結果（有限工数の TEF モデルの m(∞) は「推定総工数で見つかるバグ数」なので見出しも変える）
-        if (bestResult.Model is { } bestModel && bestModel.TotalBugsLabel != new ExponentialModel().TotalBugsLabel)
+        if (bestResult.Model is { } bestModel && bestModel.TotalBugsLabel != ReliabilityGrowthModelBase.DefaultTotalBugsLabel)
             ws.Cell("A25").Value = bestModel.TotalBugsLabel;
         ws.Cell("B25").Value = bestResult.EstimatedTotalBugs;
         ws.Cell("B26").Value = DetectionRateCell(bestResult);

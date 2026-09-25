@@ -303,7 +303,8 @@ public class CMAESOptimizer : IOptimizer
             bool smallStep = sigma_u * Math.Max(D.Maximum(), p_c.AbsoluteMaximum()) < 1e-9;
             if (smallStep || (flatGeneration && flatHistory))
             {
-                converged = true;
+                // 評価がすべて失敗している（適合度が一律 MaxValue）場合は「幅 0」でも収束ではない
+                converged = OptimizationResult.IsValidObjective(bestFitness);
                 break;
             }
             

@@ -92,4 +92,23 @@ public class InflectionSParameterizationTests
         var goTotal = service.CalculateDerivedInterval(go.GetAsymptoticTotalBugs, goFit.ParameterVector, goFisher.CovarianceMatrix!, logScale: false);
         Assert.InRange(total.StandardError, goTotal.StandardError, goTotal.StandardError * 3);
     }
+
+    [Fact]
+    public void ChangePointVariant_InflectionAfterTau_UsesSecondRate()
+    {
+        // 実効時間 u(t) は τ 以降 b₂ で増えるので、ln ψ > b₁τ なら変曲点は τ + (ln ψ - b₁τ)/b₂
+        // （以前は常に ln ψ / b₁ と表示しており、この例では 60 日になっていた）
+        var model = new InflectionSChangePointModel();
+        var p = new[] { 100.0, 0.05, 0.2, 3.0, 10.0 };
+        var inflection = Assert.Single(model.GetDerivedQuantities(p));
+        Assert.Equal(22.5, inflection.Value, 9);
+
+        // 数値的にも日次発見数の山がそこにある
+        double peakDay = Enumerable.Range(1, 600).Select(i => i * 0.1)
+            .MaxBy(t => model.Calculate(t + 0.05, p) - model.Calculate(t - 0.05, p));
+        Assert.InRange(peakDay, 22.0, 23.0);
+
+        // τ より前なら ln ψ / b₁
+        Assert.Equal(1.0 / 0.05, Assert.Single(model.GetDerivedQuantities(new[] { 100.0, 0.05, 0.2, 1.0, 30.0 })).Value, 9);
+    }
 }

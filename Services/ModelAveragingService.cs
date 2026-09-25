@@ -233,7 +233,7 @@ public class ModelAveragingService
             totalBugsWeightedSqSum += weight * totalBugs * totalBugs;
             totalWeight += weight;
             
-            // モデル内の分散（MLE・τ なしのモデルのみ Fisher 情報行列で計算できる）
+            // モデル内の分散（MLE・発見数のみの尤度のモデルで Fisher 情報行列から計算する。τ は固定）
             if (withinAvailable)
             {
                 double variance = TotalBugsVariance(fisherService, model, result, tData!, yData!);
@@ -302,12 +302,13 @@ public class ModelAveragingService
     private static double TotalBugsVariance(
         FisherInformationService service, ReliabilityGrowthModelBase model, FittingResult result, double[] tData, double[] yData)
     {
-        // Fisher 情報行列は発見数のみの Poisson-NHPP 尤度の最尤推定値でのみ有効（FRE・TEF は別の尤度）。τ は微分できない
+        // Fisher 情報行列は発見数のみの Poisson-NHPP 尤度の最尤推定値でのみ有効（FRE・TEF は別の尤度）。
+        // τ は微分できないので固定する（τ を固定した条件付きの分散）
         if (result.LossFunctionUsed != "MLE"
-            || result.ComparisonGroup != ModelComparisonGroup.DetectionOnly
-            || model.ParameterNames.Any(n => n.StartsWith("τ")))
+            || result.ComparisonGroup != ModelComparisonGroup.DetectionOnly)
             return double.NaN;
-        var fisher = service.CalculateNHPPStandardErrors(model, tData, yData, result.ParameterVector);
+        var fisher = service.CalculateNHPPStandardErrors(
+            model, tData, yData, result.ParameterVector, FisherInformationService.DetectionLikelihoodMask(model));
         if (!fisher.Success || fisher.CovarianceMatrix == null)
             return double.NaN;
         var interval = service.CalculateDerivedInterval(model.GetAsymptoticTotalBugs, result.ParameterVector, fisher.CovarianceMatrix, logScale: false);
@@ -434,7 +435,7 @@ public class ModelAveragingService
         else
         {
             sb.AppendLine($"  モデル間標準偏差: ±{result.TotalBugsUncertainty:F1}");
-            sb.AppendLine($"  ※ パラメータ推定の不確実性は含まれていません（SSE 推定または変化点モデルを含むため Fisher 情報行列で計算できません）。");
+            sb.AppendLine($"  ※ パラメータ推定の不確実性は含まれていません（SSE 推定または FRE・TEF モデルを含むため Fisher 情報行列で計算できません）。");
         }
         sb.AppendLine();
         

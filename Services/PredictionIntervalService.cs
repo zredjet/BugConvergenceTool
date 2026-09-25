@@ -191,13 +191,13 @@ public class PredictionIntervalService
         double ratio, double qLow, double qHigh)
     {
         // 到達しない反復は +∞ として分位点に含める（除外すると区間が楽観側に偏る）
-        var unsorted = bootstrap.Replicates.Select(p => model.DayForRatio(ratio, p)).ToList();
-        var days = unsorted.OrderBy(v => v).ToList();
+        var days = bootstrap.Replicates.Select(p => model.DayForRatio(ratio, p)).OrderBy(v => v).ToList();
         double unreachable = days.Count(double.IsPositiveInfinity) / (double)days.Count;
         double upper = QuantileWithInfinity(days, qHigh);
-        // a が上限に張り付いた反復は総数が過小なので、到達日も過小（早すぎる）になりうる
-        bool upperLimited = double.IsFinite(upper) && bootstrap.IsUpperLimitedByBound(qHigh)
-                            && AnyBoundReplicateInUpperTail(unsorted, bootstrap.AtUpperBound, upper);
+        // a が上限に張り付いた反復は総数が過小なので、到達日も過小（早すぎる）になりうる。
+        // 過小な到達日が分位点より下にあっても、本来の到達日は分位点を押し上げうるので、
+        // 総数・残りバグ数と同じく張り付いた割合だけで判定する（以前は分位点以上の反復があるときだけ「≥」を付けていた）
+        bool upperLimited = double.IsFinite(upper) && bootstrap.IsUpperLimitedByBound(qHigh);
         return new MilestoneInterval(
             ratio,
             model.DayForRatio(ratio, estimate),

@@ -455,21 +455,34 @@ public class ModelFitter
 
     /// <summary>
     /// ホールドアウト期間の予測発見数 Δ = m(T_end) - m(T_train) の対数の標準誤差
-    /// （訓練区間の Poisson-NHPP 尤度の Fisher 情報行列とデルタ法。変化点 τ は固定。計算できなければ NaN）
+    /// （訓練区間の発見数の Poisson-NHPP 尤度の Fisher 情報行列とデルタ法。変化点 τ と、FRE モデルの η・D など
+    /// 発見数に効かないパラメータは固定。計算できなければ NaN）
     /// </summary>
     private double HoldoutLogStandardError(ReliabilityGrowthModelBase model, double[] trainParameters)
     {
         var split = _splitResult!;
         double tTrain = split.TrainTimes[^1], tEnd = split.TestTimes[^1];
+        return LogStandardError(model, split.TrainTimes, split.TrainValues, trainParameters,
+            p => model.Calculate(tEnd, p) - model.Calculate(tTrain, p));
+    }
+
+    /// <summary>
+    /// パラメータの正の関数 g(θ) について、ln g(θ̂) の標準誤差を求める
+    /// （発見数の Poisson-NHPP 尤度の Fisher 情報行列とデルタ法。τ と発見数に効かないパラメータは固定。
+    /// g(θ̂) ≤ 0 や計算できない場合は NaN）
+    /// </summary>
+    private static double LogStandardError(
+        ReliabilityGrowthModelBase model, double[] tData, double[] yData, double[] parameters, Func<double[], double> g,
+        double confidenceLevel = 0.95)
+    {
         try
         {
-            var service = new FisherInformationService();
+            var service = new FisherInformationService(confidenceLevel);
             var fisher = service.CalculateNHPPStandardErrors(
-                model, split.TrainTimes, split.TrainValues, trainParameters, FisherInformationService.ChangePointMask(model));
+                model, tData, yData, parameters, FisherInformationService.DetectionLikelihoodMask(model));
             if (!fisher.Success || fisher.CovarianceMatrix == null) return double.NaN;
-            var interval = service.CalculateDerivedInterval(
-                p => model.Calculate(tEnd, p) - model.Calculate(tTrain, p), trainParameters, fisher.CovarianceMatrix, logScale: true);
-            // CalculateDerivedInterval の対数スケールの標準誤差は Δ̂·SE[ln Δ] なので戻す
+            var interval = service.CalculateDerivedInterval(g, parameters, fisher.CovarianceMatrix, logScale: true);
+            // CalculateDerivedInterval の対数スケールの標準誤差は g(θ̂)·SE[ln g] なので戻す
             return interval.Estimate > 0 ? interval.StandardError / interval.Estimate : double.NaN;
         }
         catch
@@ -630,11 +643,8 @@ public class ModelFitter
             double expected = Remaining(p);
             if (!(expected >= 0) || !double.IsFinite(expected)) return;
             
-            var service = new FisherInformationService(confidenceLevel);
-            var fisher = service.CalculateNHPPStandardErrors(model, _tData, _yData, p, FisherInformationService.ChangePointMask(model));
-            if (!fisher.Success || fisher.CovarianceMatrix == null) return;
-            var interval = service.CalculateDerivedInterval(Remaining, p, fisher.CovarianceMatrix, logScale: true);
-            double logSe = interval.Estimate > 0 ? interval.StandardError / interval.Estimate : 0;
+            // 期待値が 0（すべて発見済み）なら今後発見される件数も 0 件で、推定の不確実性は区間に効かない
+            double logSe = expected > 0 ? LogStandardError(model, _tData, _yData, p, Remaining, confidenceLevel) : 0;
             if (!double.IsFinite(logSe)) return;
             
             var (lower, upper, _) = ValidationUtility.PredictiveInterval(expected, logSe, 0, confidenceLevel);

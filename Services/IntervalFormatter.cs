@@ -35,6 +35,8 @@ public static class IntervalFormatter
     /// </summary>
     public static string FisherParameterLine(FisherInformationResult fisher, int i)
     {
+        if (i < fisher.FixedParameters.Length && fisher.FixedParameters[i])
+            return $"{fisher.ParameterNames[i],-4} = {fisher.Parameters[i],10:G5}  （固定して計算。尤度が微分できない、または発見数に効かないため区間なし）";
         return $"{fisher.ParameterNames[i],-4} = {fisher.Parameters[i],10:G5}  SE={fisher.StandardErrors[i],10:G4}  [{fisher.LowerBounds[i]:G5}, {fisher.UpperBounds[i]:G5}]";
     }
     

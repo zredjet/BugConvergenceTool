@@ -252,18 +252,28 @@ public abstract class ReliabilityGrowthModelBase
     }
 
     /// <summary>
-    /// 発見数の平均値関数 m(t)（<see cref="Calculate"/>）に効くパラメータの数
+    /// パラメータ index が発見数の平均値関数 m(t)（<see cref="Calculate"/>）に効くか
     /// </summary>
     /// <remarks>
-    /// 発見数だけを使う検定（χ² 適合度検定など）の自由度に使う。FRE モデルの η・D などの修正数にしか効かない
-    /// パラメータは含めない。
+    /// FRE モデルの η・D などの修正数にしか効かないパラメータは false。発見数だけの尤度では曲率が 0 なので、
+    /// 発見数だけの Fisher 情報行列では固定し、発見数だけを使う検定の自由度にも数えない。
     /// </remarks>
-    public virtual int DetectionParameterCount => ParameterNames.Length;
+    public virtual bool IsDetectionParameter(int index) => true;
+
+    /// <summary>
+    /// 発見数の平均値関数 m(t) に効くパラメータの数（χ² 適合度検定などの自由度に使う）
+    /// </summary>
+    public int DetectionParameterCount => Enumerable.Range(0, ParameterNames.Length).Count(IsDetectionParameter);
+
+    /// <summary>
+    /// m(∞) の表示名の既定値
+    /// </summary>
+    public const string DefaultTotalBugsLabel = "推定潜在バグ総数";
 
     /// <summary>
     /// m(∞)（<see cref="GetAsymptoticTotalBugs"/>）の表示名
     /// </summary>
-    public virtual string TotalBugsLabel => "推定潜在バグ総数";
+    public virtual string TotalBugsLabel => DefaultTotalBugsLabel;
 
     /// <summary>
     /// パラメータ index の境界 bound が、別のモデルに一致するなどの「自然な境界」か

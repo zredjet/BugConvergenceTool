@@ -94,13 +94,13 @@ public static class ParametricBootstrap
     }
 
     /// <summary>
-    /// TEF モデルの累積工数を再生成する（工数の尤度と同じ正規分布：Ŵ(tᵢ) + N(0, σ̂²)）
+    /// TEF モデルの工数の誤差の標準偏差 σ̂（観測工数（正の値）の残差平方和 / 件数 の平方根）
     /// </summary>
     /// <remarks>
-    /// σ̂² は観測工数（正の値）の残差平方和 / 件数（<see cref="MleLossFunction"/> の工数尤度の最尤推定値）。
-    /// 観測工数がない日は 0 のまま（尤度でも使わない）。
+    /// <see cref="MleLossFunction"/> の工数尤度（正規分布）の最尤推定値。θ̂ と観測工数だけで決まるので、
+    /// ブートストラップでは1回だけ求める。
     /// </remarks>
-    public static double[] SimulateEffort(TEFBasedModelBase model, double[] tData, double[] parameters, Random random)
+    public static double EffortNoiseSigma(TEFBasedModelBase model, double[] tData, double[] parameters)
     {
         var observed = model.ObservedEffortData!;
         int n = Math.Min(tData.Length, observed.Length);
@@ -113,7 +113,19 @@ public static class ParametricBootstrap
             sse += r * r;
             count++;
         }
-        double sigma = count > 0 ? Math.Sqrt(sse / count) : 0;
+        return count > 0 ? Math.Sqrt(sse / count) : 0;
+    }
+
+    /// <summary>
+    /// TEF モデルの累積工数を再生成する（工数の尤度と同じ正規分布：Ŵ(tᵢ) + N(0, σ̂²)）
+    /// </summary>
+    /// <remarks>
+    /// 観測工数がない日は 0 のまま（尤度でも使わない）。
+    /// </remarks>
+    public static double[] SimulateEffort(TEFBasedModelBase model, double[] tData, double[] parameters, double sigma, Random random)
+    {
+        var observed = model.ObservedEffortData!;
+        int n = Math.Min(tData.Length, observed.Length);
         var simulated = new double[observed.Length];
         for (int i = 0; i < n; i++)
         {
@@ -161,6 +173,7 @@ public static class ParametricBootstrap
         var atUpper = new bool[iterations];
         int baseSeed = seed ?? Random.Shared.Next();
         var tef = resimulateEffort && model is TEFBasedModelBase t && t.ObservedEffortData != null ? t : null;
+        double effortSigma = tef != null ? EffortNoiseSigma(tef, tData, parameters) : 0;
 
         Parallel.For(0, iterations, iter =>
         {
@@ -168,7 +181,7 @@ public static class ParametricBootstrap
             {
                 var random = new Random(unchecked(baseSeed + iter * 7919));
                 var simY = SimulateCumulative(model, tData, parameters, random);
-                var effort = tef != null ? SimulateEffort(tef, tData, parameters, random) : null;
+                var effort = tef != null ? SimulateEffort(tef, tData, parameters, effortSigma, random) : null;
                 var p = refit(new BootstrapSample(simY, effort));
                 if (p != null && p.All(double.IsFinite))
                 {
