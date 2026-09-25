@@ -10,6 +10,47 @@ public class FittingResult
 {
     public string ModelName { get; set; } = "";
     public string Category { get; set; } = "基本";
+    
+    /// <summary>
+    /// 推定に使ったモデルのインスタンス（TEF の工数データなど推定時の状態を保持）
+    /// </summary>
+    public ReliabilityGrowthModelBase? Model { get; set; }
+    
+    /// <summary>
+    /// 推奨モデルの選択対象から外す理由（null なら対象）
+    /// 例: 潜在バグ総数が探索範囲の上限に張り付いている、変化点が尤度比検定で有意でない
+    /// </summary>
+    public string? SelectionExclusionReason { get; set; }
+    
+    /// <summary>
+    /// 変化点の尤度比検定の結果（変化点モデルで検定を実行した場合）
+    /// </summary>
+    public Services.ChangePointLRTResult? ChangePointTest { get; set; }
+    
+    /// <summary>
+    /// Fisher 情報行列による漸近的な標準誤差・信頼区間（--ci かつ MLE の場合）
+    /// </summary>
+    public Services.FisherInformationResult? FisherInformation { get; set; }
+    
+    /// <summary>
+    /// Fisher 情報行列（デルタ法）による推定潜在バグ総数の信頼区間
+    /// </summary>
+    public Services.DerivedQuantityInterval? TotalBugsFisherInterval { get; set; }
+    
+    /// <summary>
+    /// パラメトリック・ブートストラップによる予測区間（--pi の場合）
+    /// </summary>
+    public Services.PredictionIntervalResult? PredictionInterval { get; set; }
+    
+    /// <summary>
+    /// マルチスタート最適化の開始点数（1 ならマルチスタートなし）
+    /// </summary>
+    public int OptimizationStarts { get; set; } = 1;
+    
+    /// <summary>
+    /// マルチスタート最適化で最良解と同じ解に収束した開始点数
+    /// </summary>
+    public int StartsConvergedToBest { get; set; } = 1;
     public Dictionary<string, double> Parameters { get; set; } = new();
     public double R2 { get; set; }
     public double MSE { get; set; }

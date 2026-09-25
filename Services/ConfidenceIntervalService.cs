@@ -678,6 +678,42 @@ public class FisherInformationService
     }
     
     /// <summary>
+    /// パラメータの関数 g(θ) の漸近信頼区間（デルタ法）
+    /// </summary>
+    /// <param name="g">パラメータの関数（例: 推定潜在バグ総数 m(∞)）</param>
+    /// <param name="parameters">推定値</param>
+    /// <param name="covariance">パラメータの分散共分散行列（Fisher 情報行列の逆行列）</param>
+    /// <param name="logScale">
+    /// true なら ln g の区間を求めて指数変換する（正の量で下限が負にならず、右に裾の長い分布に合う）
+    /// </param>
+    public DerivedQuantityInterval CalculateDerivedInterval(
+        Func<double[], double> g, double[] parameters, double[,] covariance, bool logScale = true)
+    {
+        double estimate = g(parameters);
+        Func<double[], double> h = logScale ? p => Math.Log(g(p)) : g;
+        var gradient = CalculateGradient(h, parameters);
+        
+        int k = parameters.Length;
+        double variance = 0;
+        for (int i = 0; i < k; i++)
+            for (int j = 0; j < k; j++)
+                variance += gradient[i] * covariance[i, j] * gradient[j];
+        
+        if (!(variance >= 0) || !double.IsFinite(variance) || (logScale && !(estimate > 0)))
+        {
+            return new DerivedQuantityInterval(estimate, double.NaN, double.NaN, double.NaN, _confidenceLevel, logScale);
+        }
+        
+        double se = Math.Sqrt(variance);
+        double z = MathNet.Numerics.Distributions.Normal.InvCDF(0, 1, 1 - (1 - _confidenceLevel) / 2);
+        double center = h(parameters);
+        double lower = center - z * se, upper = center + z * se;
+        return logScale
+            ? new DerivedQuantityInterval(estimate, se * estimate, Math.Exp(lower), Math.Exp(upper), _confidenceLevel, true)
+            : new DerivedQuantityInterval(estimate, se, lower, upper, _confidenceLevel, false);
+    }
+
+    /// <summary>
     /// パラメータの信頼区間を計算
     /// </summary>
     public (double[] lower, double[] upper) CalculateParameterConfidenceIntervals(
@@ -860,6 +896,21 @@ public class FisherInformationService
             return null;
         }
     }
+}
+
+/// <summary>
+/// デルタ法による派生量の信頼区間
+/// </summary>
+/// <param name="Estimate">推定値 g(θ̂)</param>
+/// <param name="StandardError">標準誤差（対数スケールの場合は g(θ̂)·SE[ln g] で近似）</param>
+/// <param name="Lower">下限</param>
+/// <param name="Upper">上限</param>
+/// <param name="ConfidenceLevel">信頼水準</param>
+/// <param name="LogScale">対数スケールで計算したか</param>
+public sealed record DerivedQuantityInterval(
+    double Estimate, double StandardError, double Lower, double Upper, double ConfidenceLevel, bool LogScale)
+{
+    public bool IsValid => double.IsFinite(Lower) && double.IsFinite(Upper);
 }
 
 /// <summary>

@@ -108,7 +108,13 @@ class Program
             options.Optimizer, 
             options.Verbose,
             options.LossFunction,
-            options.HoldoutDays);
+            options.HoldoutDays,
+            options.MultiStarts);
+        
+        if (options.MultiStarts > 1 && options.Optimizer == OptimizerType.AutoSelect)
+        {
+            Console.WriteLine("注意: --optimizer auto では全アルゴリズムを比較するため、--multi-start は使用しません。");
+        }
         
         List<FittingResult> results;
         if (options.AllExtended || options.IncludeChangePoint || options.IncludeTEF || options.IncludeFRE)
@@ -125,12 +131,35 @@ class Program
             results = fitter.FitAllModels();
         }
         
+        // 2.3. 変化点の尤度比検定（AIC は変化点 τ を過小に罰するため、有意でない変化点モデルは推奨しない）
+        if (results.Any(r => r.Success && r.Model is ChangePointModelBase))
+        {
+            if (options.LrtIterations > 0)
+            {
+                Console.WriteLine($"変化点の尤度比検定中（シミュレーション {options.LrtIterations} 回）...");
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                int tested = fitter.TestChangePoints(results, options.LrtIterations);
+                Console.WriteLine(tested > 0
+                    ? $"  {tested} モデルを検定しました（{stopwatch.Elapsed.TotalSeconds:F1}秒）"
+                    : "  検定は不要でした（変化点モデルより AIC の小さい変化点なしのモデルがあるため）");
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("注意: --lrt-iterations 0 のため変化点の尤度比検定を省略します。AIC は変化点モデルを過大に有利にするため、変化点モデルが推奨された場合は注意してください。");
+                Console.ResetColor();
+            }
+        }
+        
         var bestResult = fitter.GetBestModel(results);
         if (bestResult == null)
         {
             Console.WriteLine("エラー: フィッティングに成功したモデルがありません。");
             return 1;
         }
+        var bestModel = bestResult.Model!;
+        var tData = testData.GetTimeData();
+        var yData = testData.GetCumulativeBugsFound();
         
         // 2.5. 信頼区間の計算（オプション指定時）
         if (options.CalculateConfidenceInterval)
@@ -156,33 +185,37 @@ class Program
             
             Console.WriteLine($"{bootstrapSettings.ConfidenceLevel * 100:F0}%信頼区間をブートストラップで計算中（{iterations}回）...");
             
-            // ベストモデルのインスタンスを取得
-            var bestModel = GetModelByName(bestResult.ModelName);
-            if (bestModel != null)
+            var ciService = new ConfidenceIntervalService(bootstrapSettings, options.Verbose);
+            
+            try
             {
-                var ciService = new ConfidenceIntervalService(bootstrapSettings, options.Verbose);
-                
-                try
-                {
-                    ciService.CalculateIntervals(
-                        bestModel,
-                        testData.GetTimeData(),
-                        testData.GetCumulativeBugsFound(),
-                        bestResult
-                    );
-                    Console.WriteLine("  信頼区間の計算完了");
-                }
-                catch (Exception ex)
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"  信頼区間の計算に失敗: {ex.Message}");
-                    Console.ResetColor();
-                }
+                ciService.CalculateIntervals(bestModel, tData, yData, bestResult);
+                Console.WriteLine("  信頼区間の計算完了");
             }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  信頼区間の計算に失敗: {ex.Message}");
+                Console.ResetColor();
+            }
+            
+            // Fisher 情報行列による漸近信頼区間（Poisson-NHPP の最尤推定値でのみ有効）
+            if (bestResult.LossFunctionUsed == "MLE")
+            {
+                CalculateFisherIntervals(bestResult, tData, yData, bootstrapSettings.ConfidenceLevel);
+            }
+        }
+        
+        // 2.6. 予測区間の計算（オプション指定時）
+        if (options.CalculatePredictionInterval)
+        {
+            CalculatePredictionIntervals(options, fitter, bestResult, tData, yData, testData.DayCount);
         }
         
         // 3. 結果表示
         PrintResults(results, bestResult, testData, options.Verbose);
+        PrintFisherIntervals(bestResult);
+        PrintPredictionIntervals(bestResult, testData);
         
         // 3.3. 統計診断の実行（Phase 1-2）
         if (options.RunDiagnostics)
@@ -190,12 +223,8 @@ class Program
             Console.WriteLine("\n統計診断を実行中...");
             var diagnosticGenerator = new DiagnosticReportGenerator();
             var gofTest = new GoodnessOfFitTest();
-            var tData = testData.GetTimeData();
-            var yData = testData.GetCumulativeBugsFound();
             
             // ベストモデルの診断
-            var bestModel = GetModelByName(bestResult.ModelName);
-            if (bestModel != null)
             {
                 try
                 {
@@ -232,8 +261,12 @@ class Program
         {
             Console.WriteLine("\nモデル平均化を実行中...");
             var averagingService = new ModelAveragingService();
-            var models = GetAllModelsAsDictionary(options);
-            var predictionTimes = testData.GetTimeData();
+            // 推定に使ったモデルのインスタンス（TEF の工数データ等を保持）を使う
+            var models = results
+                .Where(r => r.Success && r.Model != null)
+                .GroupBy(r => r.ModelName)
+                .ToDictionary(g => g.Key, g => g.First().Model!);
+            var predictionTimes = tData;
             
             averagingResult = averagingService.Average(
                 results, models, predictionTimes, testData.DayCount);
@@ -375,7 +408,7 @@ class Program
                 if (isBest)
                     Console.ForegroundColor = ConsoleColor.Green;
                 
-                string modelNameWithMarker = result.ModelName + (isBest ? " *" : "");
+                string modelNameWithMarker = result.ModelName + (isBest ? " *" : "") + (result.SelectionExclusionReason != null ? " †" : "");
                 string line = $"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.SelectionScore,colNum:F2} {result.SelectionScore - minScore,colNum:F2}";
                 if (hasHoldout) line += $" {(result.HoldoutIncrementErrorPercent.HasValue ? $"{result.HoldoutIncrementErrorPercent:+0.0;-0.0}" : "-"),colNum}";
                 line += $" {result.EstimatedTotalBugs,colNum:F1}";
@@ -385,6 +418,25 @@ class Program
                 Console.ResetColor();
             }
             Console.WriteLine();
+        }
+        
+        // 推奨対象外のモデルと変化点の尤度比検定
+        var excluded = results.Where(r => ModelComparisonGroup.IsComparable(r) && r.SelectionExclusionReason != null).ToList();
+        if (excluded.Count > 0)
+        {
+            Console.WriteLine("† = 推奨対象外:");
+            foreach (var r in excluded)
+                Console.WriteLine($"    {r.ModelName}: {r.SelectionExclusionReason}");
+        }
+        foreach (var r in results.Where(r => r.ChangePointTest?.Success == true))
+        {
+            Console.WriteLine($"変化点の尤度比検定（{r.ModelName}）: {r.ChangePointTest!.Interpretation}");
+        }
+        if (bestResult.SelectionExclusionReason != null)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"警告: 推奨条件を満たすモデルがないため、選択基準値が最小のモデルを表示しています。このモデルも「{bestResult.SelectionExclusionReason}」ため、推定総バグ数・収束予測は参考値です。");
+            Console.ResetColor();
         }
         
         // 使用された評価基準を表示
@@ -518,6 +570,121 @@ class Program
     }
     
     /// <summary>
+    /// Fisher 情報行列による漸近信頼区間を計算（パラメータと推定潜在バグ総数）
+    /// </summary>
+    static void CalculateFisherIntervals(FittingResult bestResult, double[] tData, double[] yData, double confidenceLevel)
+    {
+        var model = bestResult.Model!;
+        if (model.ParameterNames.Any(n => n.StartsWith("τ")))
+        {
+            Console.WriteLine("  Fisher情報行列: 変化点 τ は尤度が τ について微分できないため、変化点モデルでは計算しません。");
+            return;
+        }
+        
+        var service = new FisherInformationService(confidenceLevel);
+        var fisher = service.CalculateNHPPStandardErrors(model, tData, yData, bestResult.ParameterVector);
+        bestResult.FisherInformation = fisher;
+        if (fisher.Success && fisher.CovarianceMatrix != null)
+        {
+            bestResult.TotalBugsFisherInterval = service.CalculateDerivedInterval(
+                model.GetAsymptoticTotalBugs, bestResult.ParameterVector, fisher.CovarianceMatrix, logScale: true);
+        }
+        else
+        {
+            Console.WriteLine($"  Fisher情報行列の計算に失敗: {fisher.ErrorMessage}");
+        }
+    }
+    
+    /// <summary>
+    /// パラメトリック・ブートストラップで予測区間を計算
+    /// </summary>
+    static void CalculatePredictionIntervals(
+        CommandOptions options, ModelFitter fitter, FittingResult bestResult, double[] tData, double[] yData, int dayCount)
+    {
+        if (bestResult.ComparisonGroup != ModelComparisonGroup.DetectionOnly)
+        {
+            Console.WriteLine("  予測区間: 修正数・工数データを含むモデルには対応していないため省略します。");
+            return;
+        }
+        
+        var bootstrapSettings = ConfigurationService.Current.Bootstrap;
+        int iterations = options.BootstrapIterations > 0 ? options.BootstrapIterations : bootstrapSettings.Iterations;
+        double level = bootstrapSettings.ConfidenceLevel;
+        Console.WriteLine($"{level * 100:F0}%予測区間をパラメトリック・ブートストラップで計算中（{iterations}回）...");
+        
+        var model = bestResult.Model!;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var bootstrap = ParametricBootstrap.Run(model, tData, bestResult.ParameterVector, fitter.CreateRefitFunction(model), iterations);
+        
+        // 予測期間: 観測期間と同じ長さ（14〜180日）
+        int horizon = Math.Clamp(dayCount, 14, 180);
+        bestResult.PredictionInterval = new PredictionIntervalService().Calculate(
+            model, tData, yData, bestResult.ParameterVector, bootstrap, horizon, level);
+        Console.WriteLine($"  予測区間の計算完了（再推定の成功 {bootstrap.Succeeded}/{bootstrap.Requested}、{stopwatch.Elapsed.TotalSeconds:F1}秒）");
+    }
+    
+    /// <summary>
+    /// Fisher 情報行列による信頼区間を表示
+    /// </summary>
+    static void PrintFisherIntervals(FittingResult bestResult)
+    {
+        var fisher = bestResult.FisherInformation;
+        if (fisher == null || !fisher.Success) return;
+        
+        Console.WriteLine($"\n=== パラメータの信頼区間（Fisher情報行列、{bestResult.TotalBugsFisherInterval?.ConfidenceLevel ?? 0.95:P0}）===\n");
+        for (int i = 0; i < fisher.ParameterNames.Length; i++)
+        {
+            Console.WriteLine($"  {fisher.ParameterNames[i],-4} = {fisher.Parameters[i],10:G5}  SE={fisher.StandardErrors[i],10:G4}  [{fisher.LowerBounds[i]:G5}, {fisher.UpperBounds[i]:G5}]");
+        }
+        var total = bestResult.TotalBugsFisherInterval;
+        if (total != null && total.IsValid)
+        {
+            Console.WriteLine($"\n  推定潜在バグ総数: {total.Estimate:F1} 件  [{total.Lower:F1}, {total.Upper:F1}]（デルタ法・対数スケール）");
+        }
+        Console.WriteLine("  ※ 漸近近似。パラメータが探索範囲の境界にある場合やデータが少ない場合は不正確です。");
+    }
+    
+    /// <summary>
+    /// 予測区間を表示
+    /// </summary>
+    static void PrintPredictionIntervals(FittingResult bestResult, TestData testData)
+    {
+        var pi = bestResult.PredictionInterval;
+        if (pi == null) return;
+        
+        Console.WriteLine($"\n=== 予測区間（パラメトリック・ブートストラップ、{pi.ConfidenceLevel:P0}、再推定の成功 {pi.Succeeded}/{pi.Requested}）===\n");
+        foreach (var warning in pi.Warnings)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"  注意: {warning}");
+            Console.ResetColor();
+        }
+        if (pi.Succeeded == 0) return;
+        
+        if (pi.TotalBugs != null)
+            Console.WriteLine($"  推定潜在バグ総数: {pi.TotalBugs.Estimate:F1} 件  [{pi.TotalBugs.Lower:F1}, {pi.TotalBugs.Upper:F1}]（信頼区間）");
+        if (pi.RemainingBugs != null)
+            Console.WriteLine($"  今後発見される件数: {pi.RemainingBugs.Estimate:F1} 件  [{pi.RemainingBugs.Lower:F0}, {pi.RemainingBugs.Upper:F0}]（予測区間）");
+        
+        Console.WriteLine("\n  収束予測日の区間:");
+        foreach (var m in pi.Milestones)
+        {
+            string FormatDay(double d) => double.IsPositiveInfinity(d) ? "到達せず" : $"{d:F1}日目";
+            string note = m.UnreachableFraction > 0 ? $"（{m.UnreachableFraction:P0} の反復で到達せず）" : "";
+            Console.WriteLine($"    {m.Ratio * 100:F0}%発見: {FormatDay(m.EstimateDay)}  [{FormatDay(m.LowerDay)}, {FormatDay(m.UpperDay)}]{note}");
+        }
+        
+        Console.WriteLine("\n  将来の累積発見数（予測区間）:");
+        Console.WriteLine($"    {"日",6} {"日付",12} {"予測",8} {"下限",8} {"上限",8}");
+        int step = Math.Max(1, pi.FutureTimes.Length / 8);
+        for (int d = step - 1; d < pi.FutureTimes.Length; d += step)
+        {
+            string date = testData.StartDate.HasValue ? testData.StartDate.Value.AddDays(pi.FutureTimes[d] - 1).ToString("yyyy/MM/dd") : "-";
+            Console.WriteLine($"    {pi.FutureTimes[d],6:F0} {date,12} {pi.PointForecast[d],8:F1} {pi.Lower[d],8:F0} {pi.Upper[d],8:F0}");
+        }
+    }
+    
+    /// <summary>
     /// 推奨モデルのパラメータ詳細を表示（verboseモード用）
     /// </summary>
     static void PrintParameterDetails(FittingResult bestResult)
@@ -538,44 +705,7 @@ class Program
         Console.WriteLine($"  選択基準:            {bestResult.ModelSelectionCriterion} = {bestResult.SelectionScore:F2}");
     }
     
-    /// <summary>
-    /// モデル名からモデルインスタンスを取得
-    /// </summary>
-    static ReliabilityGrowthModelBase? GetModelByName(string modelName)
-    {
-        // 全拡張モデルから検索
-        var allModels = ModelFactory.GetAllExtendedModels(
-            includeChangePoint: true,
-            includeTEF: true,
-            includeFRE: true);
-        
-        return allModels.FirstOrDefault(m => m.Name == modelName)
-            ?? ModelFactory.GetAllModels().FirstOrDefault(m => m.Name == modelName);
-    }
     
-    /// <summary>
-    /// コマンドオプションに基づいて全モデルを辞書形式で取得
-    /// </summary>
-    static Dictionary<string, ReliabilityGrowthModelBase> GetAllModelsAsDictionary(CommandOptions options)
-    {
-        var models = new List<ReliabilityGrowthModelBase>();
-        
-        if (options.AllExtended || options.IncludeChangePoint || options.IncludeTEF || options.IncludeFRE)
-        {
-            models.AddRange(ModelFactory.GetAllExtendedModels(
-                options.IncludeChangePoint,
-                options.IncludeTEF,
-                options.IncludeFRE));
-        }
-        else
-        {
-            models.AddRange(ModelFactory.GetAllModels());
-        }
-        
-        return models
-            .GroupBy(m => m.Name)
-            .ToDictionary(g => g.Key, g => g.First());
-    }
     
     static string FindTemplatePath()
     {
@@ -728,6 +858,16 @@ class Program
                 case "--ma":
                     options.UseModelAveraging = true;
                     break;
+                
+                case "--multi-start":
+                    if (i + 1 < args.Length && int.TryParse(args[++i], out int starts))
+                        options.MultiStarts = Math.Max(1, starts);
+                    break;
+                
+                case "--lrt-iterations":
+                    if (i + 1 < args.Length && int.TryParse(args[++i], out int lrt))
+                        options.LrtIterations = Math.Max(0, lrt);
+                    break;
                     
                 default:
                     if (!args[i].StartsWith("-"))
@@ -767,12 +907,14 @@ class Program
         Console.WriteLine("                          nm    - Nelder-Mead法（局所最適化）");
         Console.WriteLine("                          grid  - グリッドサーチ+勾配降下法（従来手法）");
         Console.WriteLine("                          auto  - 全アルゴリズムで比較し最良を選択");
+        Console.WriteLine("  --multi-start N       N 個の開始点（Latin Hypercube Sampling）から並列に最適化（デフォルト: 1）");
         Console.WriteLine();
         Console.WriteLine("拡張モデルオプション:");
         Console.WriteLine("  --change-point        変化点モデルを含める");
         Console.WriteLine("  --tef                 テスト工数関数モデルを含める");
         Console.WriteLine("  --fre                 欠陥除去効率モデルを含める");
         Console.WriteLine("  --all-extended        全拡張モデルを含める");
+        Console.WriteLine("  --lrt-iterations N    変化点の尤度比検定のシミュレーション回数（デフォルト: 99、0 で省略）");
         Console.WriteLine();
         Console.WriteLine("設定オプション:");
         Console.WriteLine("  -c, --config FILE     設定ファイルを指定");
@@ -794,7 +936,8 @@ class Program
         Console.WriteLine("  -d, --diagnostics     残差診断・適合度検定を実行");
         Console.WriteLine("                        （残差分析、自己相関検定、正規性検定、χ²検定、KS検定）");
         Console.WriteLine("  --pi, --prediction-interval");
-        Console.WriteLine("                        予測区間を計算（パラメトリック・ブートストラップ）");
+        Console.WriteLine("                        将来の累積発見数・残りバグ数・収束日の予測区間を計算");
+        Console.WriteLine("                        （パラメトリック・ブートストラップ。反復回数は --bootstrap）");
         Console.WriteLine("  --ma, --model-averaging");
         Console.WriteLine("                        AIC重みによるモデル平均化を実行");
         Console.WriteLine();
@@ -860,4 +1003,10 @@ class CommandOptions
     
     // モデル平均化オプション（Phase 4）
     public bool UseModelAveraging { get; set; } = false;
+    
+    // マルチスタート最適化の開始点数（1 ならマルチスタートなし）
+    public int MultiStarts { get; set; } = 1;
+    
+    // 変化点の尤度比検定のシミュレーション回数（0 なら検定しない）
+    public int LrtIterations { get; set; } = 99;
 }

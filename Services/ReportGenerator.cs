@@ -133,7 +133,7 @@ public class ReportGenerator
             
             foreach (var result in groupResults)
             {
-                string marker = result.ModelName == bestResult.ModelName ? " *" : "";
+                string marker = (result.ModelName == bestResult.ModelName ? " *" : "") + (result.SelectionExclusionReason != null ? " †" : "");
                 string modelNameWithMarker = result.ModelName + marker;
                 sb.AppendLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.MSE,colNum:F2} {result.SelectionScore,colNum:F2} {result.SelectionScore - minScore,colNum:F2} {result.EstimatedTotalBugs,colNum:F1}");
             }
@@ -144,6 +144,21 @@ public class ReportGenerator
         if (criterion == "AICc")
         {
             sb.AppendLine($"      （小標本補正: n={_testData.DayCount} に対し n/k < 40 のモデルがあるため、グループ内は AICc で統一）");
+        }
+        var excluded = results.Where(r => ModelComparisonGroup.IsComparable(r) && r.SelectionExclusionReason != null).ToList();
+        if (excluded.Count > 0)
+        {
+            sb.AppendLine("  † = 推奨対象外:");
+            foreach (var r in excluded)
+                sb.AppendLine($"      {r.ModelName}: {r.SelectionExclusionReason}");
+        }
+        foreach (var r in results.Where(r => r.ChangePointTest?.Success == true))
+        {
+            sb.AppendLine($"  変化点の尤度比検定（{r.ModelName}）: {r.ChangePointTest!.Interpretation}");
+        }
+        if (bestResult.SelectionExclusionReason != null)
+        {
+            sb.AppendLine($"  ⚠ 推奨条件を満たすモデルがないため、選択基準値が最小のモデルを示しています（{bestResult.SelectionExclusionReason}）。推定総バグ数・収束予測は参考値です。");
         }
         sb.AppendLine();
         
@@ -209,6 +224,8 @@ public class ReportGenerator
             sb.AppendLine($"    注意: {assessment.Note}");
         }
         sb.AppendLine();
+        
+        AppendUncertainty(sb, bestResult);
         
         // 感度分析セクション
         if (bestResult.SensitivityAnalysis != null && bestResult.SensitivityAnalysis.Items.Count > 0)
@@ -328,6 +345,68 @@ public class ReportGenerator
         }
         
         return sb.ToString();
+    }
+    
+    /// <summary>
+    /// Fisher 情報行列による信頼区間と予測区間をレポートに追加
+    /// </summary>
+    private void AppendUncertainty(StringBuilder sb, FittingResult bestResult)
+    {
+        var fisher = bestResult.FisherInformation;
+        if (fisher != null && fisher.Success)
+        {
+            sb.AppendLine("--------------------------------------------------------------------------------");
+            sb.AppendLine("【パラメータの信頼区間（Fisher情報行列）】");
+            sb.AppendLine("--------------------------------------------------------------------------------");
+            sb.AppendLine();
+            for (int i = 0; i < fisher.ParameterNames.Length; i++)
+            {
+                sb.AppendLine($"  {fisher.ParameterNames[i],-4} = {fisher.Parameters[i],10:G5}  SE={fisher.StandardErrors[i],10:G4}  [{fisher.LowerBounds[i]:G5}, {fisher.UpperBounds[i]:G5}]");
+            }
+            var total = bestResult.TotalBugsFisherInterval;
+            if (total != null && total.IsValid)
+            {
+                sb.AppendLine($"  推定潜在バグ総数: {total.Estimate:F1} 件  {total.ConfidenceLevel:P0}区間 [{total.Lower:F1}, {total.Upper:F1}]（デルタ法・対数スケール）");
+            }
+            sb.AppendLine("  ※ 漸近近似。パラメータが探索範囲の境界にある場合やデータが少ない場合は不正確です。");
+            sb.AppendLine();
+        }
+        
+        var pi = bestResult.PredictionInterval;
+        if (pi != null)
+        {
+            sb.AppendLine("--------------------------------------------------------------------------------");
+            sb.AppendLine($"【予測区間（パラメトリック・ブートストラップ、{pi.ConfidenceLevel:P0}）】");
+            sb.AppendLine("--------------------------------------------------------------------------------");
+            sb.AppendLine();
+            sb.AppendLine($"  再推定の成功: {pi.Succeeded}/{pi.Requested}（失敗した反復は除外）");
+            foreach (var warning in pi.Warnings)
+                sb.AppendLine($"  注意: {warning}");
+            if (pi.Succeeded > 0)
+            {
+                if (pi.TotalBugs != null)
+                    sb.AppendLine($"  推定潜在バグ総数:   {pi.TotalBugs.Estimate:F1} 件  [{pi.TotalBugs.Lower:F1}, {pi.TotalBugs.Upper:F1}]（信頼区間）");
+                if (pi.RemainingBugs != null)
+                    sb.AppendLine($"  今後発見される件数: {pi.RemainingBugs.Estimate:F1} 件  [{pi.RemainingBugs.Lower:F0}, {pi.RemainingBugs.Upper:F0}]（予測区間）");
+                sb.AppendLine();
+                sb.AppendLine("  収束予測日の区間:");
+                foreach (var m in pi.Milestones)
+                {
+                    string FormatDay(double d) => double.IsPositiveInfinity(d) ? "到達せず" : $"{d:F1}日目";
+                    string note = m.UnreachableFraction > 0 ? $"（{m.UnreachableFraction:P0} の反復で到達せず）" : "";
+                    sb.AppendLine($"    {m.Ratio * 100:F0}%発見: {FormatDay(m.EstimateDay)}  [{FormatDay(m.LowerDay)}, {FormatDay(m.UpperDay)}]{note}");
+                }
+                sb.AppendLine();
+                sb.AppendLine("  将来の累積発見数（予測区間）:");
+                sb.AppendLine($"    {"日",6} {"日付",12} {"予測",8} {"下限",8} {"上限",8}");
+                for (int d = 0; d < pi.FutureTimes.Length; d++)
+                {
+                    string date = _testData.StartDate.HasValue ? _testData.StartDate.Value.AddDays(pi.FutureTimes[d] - 1).ToString("yyyy/MM/dd") : "-";
+                    sb.AppendLine($"    {pi.FutureTimes[d],6:F0} {date,12} {pi.PointForecast[d],8:F1} {pi.Lower[d],8:F0} {pi.Upper[d],8:F0}");
+                }
+            }
+            sb.AppendLine();
+        }
     }
     
     /// <summary>

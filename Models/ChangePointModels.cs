@@ -32,6 +32,11 @@ public abstract class ChangePointModelBase : ReliabilityGrowthModelBase
     public double ChangePoint { get; protected set; }
     
     /// <summary>
+    /// 変化点なしの対応モデル（尤度比検定の帰無モデル）。b₁ = b₂ のときこのモデルに一致する
+    /// </summary>
+    public abstract ReliabilityGrowthModelBase CreateNullModel();
+    
+    /// <summary>
     /// 実効テスト時間 u(t) = b₁t（t ≤ τ）、b₁τ + b₂(t-τ)（t &gt; τ）
     /// </summary>
     protected static double EffectiveTime(double t, double b1, double b2, double tau)
@@ -54,6 +59,8 @@ public abstract class ChangePointModelBase : ReliabilityGrowthModelBase
 /// </summary>
 public class ExponentialChangePointModel : ChangePointModelBase
 {
+    public override ReliabilityGrowthModelBase CreateNullModel() => new ExponentialModel();
+    
     public override string Name => "指数型+変化点";
     public override string Formula => "m(t) = a(1-e^(-u(t))), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]";
     public override string Description => "指数型の検出率が変化点 τ で b₁ から b₂ に変わる";
@@ -103,6 +110,8 @@ public class ExponentialChangePointModel : ChangePointModelBase
 /// </remarks>
 public class DelayedSChangePointModel : ChangePointModelBase
 {
+    public override ReliabilityGrowthModelBase CreateNullModel() => new DelayedSModel();
+    
     public override string Name => "遅延S字型+変化点";
     public override string Formula => "m(t) = a[1-(1+b₁t)e^(-b₁t)] [t≤τ], a[1-(1+b₁τ)/(1+b₂τ)(1+b₂t)e^(-b₁τ-b₂(t-τ))] [t>τ]";
     public override string Description => "遅延S字型の検出率が変化点 τ で b₁ から b₂ に変わる";
@@ -159,6 +168,8 @@ public class DelayedSChangePointModel : ChangePointModelBase
 /// </remarks>
 public class InflectionSChangePointModel : ChangePointModelBase
 {
+    public override ReliabilityGrowthModelBase CreateNullModel() => new InflectionSModel();
+    
     public override string Name => "変曲S字型+変化点";
     public override string Formula => "m(t) = a(1-e^(-u(t)))/(1+ψ·e^(-u(t))), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]";
     public override string Description => "変曲S字型（Ohba）の検出率が変化点 τ で b₁ から b₂ に変わる";
@@ -210,6 +221,8 @@ public class MultipleChangePointModel : ChangePointModelBase
     {
         _numChangePoints = Math.Min(3, Math.Max(1, numChangePoints));
     }
+    
+    public override ReliabilityGrowthModelBase CreateNullModel() => new ExponentialModel();
     
     public override string Name => $"複数変化点({_numChangePoints}点)";
     public override string Formula => $"m(t) = a(1-e^(-u(t))), u(t) は {_numChangePoints} 個の変化点で傾きが変わる区分線形";

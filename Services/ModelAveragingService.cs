@@ -81,7 +81,7 @@ public class ModelAveragingService
     /// </summary>
     /// <remarks>
     /// 尤度に含むデータが異なるモデル（FRE・TEF）とは AIC を比較できないため、
-    /// 異なる比較グループのモデルに重みを付けない。
+    /// 異なる比較グループのモデルに重みを付けない。推奨対象外のモデルも除く。
     /// </remarks>
     private static List<FittingResult> SelectComparableResults(IEnumerable<FittingResult> results)
     {
@@ -90,7 +90,11 @@ public class ModelAveragingService
             .Where(r => double.IsFinite(r.AIC) && double.IsFinite(r.AICc))
             .ToList();
         var primaryGroup = ModelComparisonGroup.SelectPrimaryGroup(comparable);
-        return comparable.Where(r => r.ComparisonGroup == primaryGroup).ToList();
+        var inGroup = comparable.Where(r => r.ComparisonGroup == primaryGroup).ToList();
+        
+        // 推奨対象外のモデル（総数が境界に張り付き・変化点が有意でない等）には重みを付けない
+        var eligible = inGroup.Where(r => r.SelectionExclusionReason == null).ToList();
+        return eligible.Count > 0 ? eligible : inGroup;
     }
 
     /// <summary>

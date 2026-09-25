@@ -209,7 +209,7 @@ public class ChartGenerator
         {
             // 従来の方式：2倍の期間まで予測
             xAxis = Enumerable.Range(1, predDays).Select(i => (double)i).ToArray();
-            var parameters = result.Parameters.Values.ToArray();
+            var parameters = result.ParameterVector;
             predBugs = xAxis.Select(t => model.Calculate(t, parameters)).ToArray();
         }
         
@@ -269,14 +269,10 @@ public class ChartGenerator
         plt.SavePng(filePath, _width, _height);
     }
 
-    private ReliabilityGrowthModelBase GetModelFromResult(FittingResult result)
+    private static ReliabilityGrowthModelBase GetModelFromResult(FittingResult result)
     {
-        // 全拡張モデルから検索
-        var allModels = ModelFactory.GetAllExtendedModels(
-            includeChangePoint: true,
-            includeTEF: true,
-            includeFRE: true);
-        return allModels.FirstOrDefault(m => m.Name == result.ModelName)
-            ?? ModelFactory.GetAllModels().First(m => m.Name == result.ModelName);
+        // 推定に使ったモデルのインスタンス（TEF の工数データ等を保持）
+        return result.Model
+            ?? throw new InvalidOperationException($"{result.ModelName} のモデルインスタンスがありません");
     }
 }

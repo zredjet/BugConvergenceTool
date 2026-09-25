@@ -80,6 +80,25 @@ public class OptimizationResult
     /// </summary>
     public long ElapsedMilliseconds { get; set; }
     
+    #region マルチスタート情報
+    
+    /// <summary>
+    /// マルチスタートで試した開始点数（マルチスタートでなければ 1）
+    /// </summary>
+    public int StartsAttempted { get; set; } = 1;
+    
+    /// <summary>
+    /// マルチスタートで最適化に成功した開始点数
+    /// </summary>
+    public int StartsSucceeded { get; set; } = 1;
+    
+    /// <summary>
+    /// 最良解と同じ目的関数値に到達した開始点数
+    /// </summary>
+    public int StartsConvergedToBest { get; set; } = 1;
+    
+    #endregion
+    
     #region 収束診断情報
     
     /// <summary>

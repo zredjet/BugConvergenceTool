@@ -224,14 +224,10 @@ public class ExcelWriter
         ws.Range(1, 1, 1, 5).Style.Fill.BackgroundColor = XLColor.FromHtml("#4472C4");
         ws.Range(1, 1, 1, 5).Style.Font.FontColor = XLColor.White;
 
-        // モデル取得（全拡張モデルから検索）
-        var allModels = ModelFactory.GetAllExtendedModels(
-            includeChangePoint: true,
-            includeTEF: true,
-            includeFRE: true);
-        var model = allModels.FirstOrDefault(m => m.Name == bestResult.ModelName)
-            ?? ModelFactory.GetAllModels().First(m => m.Name == bestResult.ModelName);
-        var parameters = bestResult.Parameters.Values.ToArray();
+        // 推定に使ったモデルのインスタンスとパラメータ列（順序を保持）
+        var model = bestResult.Model
+            ?? throw new InvalidOperationException($"{bestResult.ModelName} のモデルインスタンスがありません");
+        var parameters = bestResult.ParameterVector;
         var actualBugs = _testData.GetCumulativeBugsFound();
         
         for (int i = 1; i <= predDays; i++)
