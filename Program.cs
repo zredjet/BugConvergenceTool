@@ -78,7 +78,7 @@ class Program
         Console.WriteLine($"入力ファイル: {options.InputFile}");
         
         var reader = new ExcelReader();
-        var testData = reader.ReadFromExcel(options.InputFile);
+        var testData = reader.ReadFromExcel(options.InputFile!);  // Main で未指定時は終了済み
         
         Console.WriteLine($"プロジェクト: {testData.ProjectName}");
         Console.WriteLine($"データ件数: {testData.DayCount} 日分" +
