@@ -48,12 +48,10 @@ public class FittingResult
     /// <summary>
     /// 推定潜在バグ総数（漸近値 m(∞)）
     /// フィッティング時に <see cref="ReliabilityGrowthModelBase.GetAsymptoticTotalBugs"/> で設定する。
-    /// パラメータ a は m(∞) と一致しないモデル（変化点・不完全デバッグ・TEF 等）があるため直接使わないこと。
+    /// パラメータ a は m(∞) と一致しないモデル（有限工数の TEF 組込モデル等）があるため直接使わないこと。
     /// </summary>
     public double EstimatedTotalBugs { get; set; }
     
-    // 不完全デバッグ率（パラメータp）
-    public double? ImperfectDebugRate => Parameters.ContainsKey("p") ? Parameters["p"] : null;
     
     // オプティマイザ情報
     public string OptimizerUsed { get; set; } = "";
@@ -199,40 +197,29 @@ public abstract class ReliabilityGrowthModelBase
     #region 共通ヘルパ（初期値推定用）
 
     /// <summary>
-    /// 観測値の累積系列を計算
+    /// 累積系列が最終値の targetRatio 倍に初めて達する日（1始まりの日数を返す）
+    /// 到達しない場合は最終日を返す
     /// </summary>
-    protected static double[] ComputeCumulative(double[] yData)
+    /// <param name="cumulative">累積バグ数（GetInitialParameters に渡される yData はすでに累積値）</param>
+    /// <remarks>
+    /// 以前は累積値をさらに累積してから比率を求めていたため、到達日が大きく後ろにずれていた
+    /// （例: 50% 到達日 15 日が 30 日と算出される）。
+    /// </remarks>
+    protected static double FindDayForCumulativeRatio(double[] cumulative, double targetRatio)
     {
-        var cum = new double[yData.Length];
-        double s = 0;
-        for (int i = 0; i < yData.Length; i++)
-        {
-            s += yData[i];
-            cum[i] = s;
-        }
-        return cum;
-    }
+        if (cumulative.Length == 0) return 1.0;
 
-    /// <summary>
-    /// 累積系列が targetRatio に初めて達するインデックス（1始まりの日数を返す）
-    /// 到達しない場合は最終日のインデックスを返す
-    /// </summary>
-    protected static double FindDayForCumulativeRatio(double[] yData, double targetRatio)
-    {
-        if (yData.Length == 0) return 1.0;
-
-        var cum = ComputeCumulative(yData);
-        double total = cum[^1];
+        double total = cumulative[^1];
         if (total <= 0) return 1.0;
 
         double target = total * targetRatio;
-        for (int i = 0; i < cum.Length; i++)
+        for (int i = 0; i < cumulative.Length; i++)
         {
-            if (cum[i] >= target)
+            if (cumulative[i] >= target)
                 return i + 1.0; // 1始まりの日数に対応
         }
 
-        return cum.Length;
+        return cumulative.Length;
     }
 
     /// <summary>
@@ -320,14 +307,6 @@ public abstract class ReliabilityGrowthModelBase
     }
     
     /// <summary>
-    /// 設定から不完全デバッグ係数 p の初期値を取得
-    /// </summary>
-    protected static double GetImperfectDebugP0()
-    {
-        return ConfigurationService.Current.ImperfectDebug.P0;
-    }
-    
-    /// <summary>
     /// 設定から初期欠陥除去効率 η₀ を取得
     /// </summary>
     protected static double GetEta0()
@@ -341,14 +320,6 @@ public abstract class ReliabilityGrowthModelBase
     protected static double GetEtaInfinity()
     {
         return ConfigurationService.Current.ImperfectDebug.EtaInfinity;
-    }
-    
-    /// <summary>
-    /// 設定からバグ混入率 α の初期値を取得
-    /// </summary>
-    protected static double GetAlpha0()
-    {
-        return ConfigurationService.Current.ImperfectDebug.Alpha0;
     }
     
     /// <summary>

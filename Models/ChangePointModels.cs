@@ -1,9 +1,27 @@
 namespace BugConvergenceTool.Models;
 
 /// <summary>
-/// 変化点（Change Point）モデルの基底クラス
-/// テスト環境変化により欠陥検出率が変化点τで不連続に変化
+/// 変化点モデルの基底クラス
 /// </summary>
+/// <remarks>
+/// <para>
+/// 変化点モデルは「共通の潜在バグ総数 a」と「実効テスト時間 u(t)」で表す標準形を用いる。
+/// 変化点 τ で欠陥検出率が b₁ から b₂ に変わるとき、u(t) = b₁t（t ≤ τ）、b₁τ + b₂(t-τ)（t &gt; τ）。
+/// </para>
+/// <para>
+/// 以前の実装は変化点で「新しいバグ集団 a₂」を立ち上げる形だったため、
+/// m(∞) = m₁(τ) + a₂ となって変化点前の未検出バグが消え、遅延S字型では変化点直後に検出強度が 0 に落ちていた。
+/// </para>
+/// <para>
+/// τ が1つのモデルは τ をパラメータ列の最後に置く（<see cref="FixedTauChangePointModel"/> が前提とする）。
+/// </para>
+/// <para>
+/// 参考: Zhao, M. (1993). "Change-point problems in software and hardware reliability."
+/// Communications in Statistics - Theory and Methods, 22(3), 757-768.
+/// Huang, C.-Y. (2005). "Performance analysis of software reliability growth models with testing-effort and change-point."
+/// Journal of Systems and Software, 76(2), 181-194.
+/// </para>
+/// </remarks>
 public abstract class ChangePointModelBase : ReliabilityGrowthModelBase
 {
     public override string Category => "変化点";
@@ -12,68 +30,54 @@ public abstract class ChangePointModelBase : ReliabilityGrowthModelBase
     /// 変化点τ
     /// </summary>
     public double ChangePoint { get; protected set; }
+    
+    /// <summary>
+    /// 実効テスト時間 u(t) = b₁t（t ≤ τ）、b₁τ + b₂(t-τ)（t &gt; τ）
+    /// </summary>
+    protected static double EffectiveTime(double t, double b1, double b2, double tau)
+    {
+        return t <= tau ? b1 * t : b1 * tau + b2 * (t - tau);
+    }
+    
+    /// <summary>
+    /// 変化点 τ の初期値（累積比率の到達日。設定から比率を取得）
+    /// </summary>
+    protected static double InitialChangePoint(double[] cumulative)
+    {
+        return FindDayForCumulativeRatio(cumulative, GetChangePointRatio());
+    }
 }
 
 /// <summary>
 /// 指数型 + 変化点モデル
-/// t ≤ τ: m₁(t) = a₁(1 - e^(-b₁t))
-/// t > τ: m₂(t) = m₁(τ) + a₂(1 - e^(-b₂(t-τ)))
+/// m(t) = a(1 - e^(-u(t)))
 /// </summary>
 public class ExponentialChangePointModel : ChangePointModelBase
 {
     public override string Name => "指数型+変化点";
-    public override string Formula => "m(t) = a₁(1-e^(-b₁t)) [t≤τ], m₁(τ)+a₂(1-e^(-b₂(t-τ))) [t>τ]";
-    public override string Description => "指数型モデルに変化点を導入";
-    public override string[] ParameterNames => new[] { "a₁", "b₁", "a₂", "b₂", "τ" };
-    
-    /// <summary>
-    /// 漸近的総欠陥数: m(∞) = m₁(τ) + a₂
-    /// </summary>
-    /// <remarks>
-    /// 変化点前の集団は τ までしか検出されないため、a₁ 全体ではなく m₁(τ) のみが寄与する。
-    /// </remarks>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        double a2 = parameters[2];
-        double tau = parameters[4];
-        return Calculate(tau, parameters) + a2;
-    }
+    public override string Formula => "m(t) = a(1-e^(-u(t))), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]";
+    public override string Description => "指数型の検出率が変化点 τ で b₁ から b₂ に変わる";
+    public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "τ" };
     
     public override double Calculate(double t, double[] p)
     {
-        double a1 = p[0], b1 = p[1], a2 = p[2], b2 = p[3], tau = p[4];
-        
-        if (t <= tau)
-        {
-            // 変化点前
-            return a1 * (1 - Math.Exp(-b1 * t));
-        }
-        else
-        {
-            // 変化点後
-            double m_tau = a1 * (1 - Math.Exp(-b1 * tau));
-            return m_tau + a2 * (1 - Math.Exp(-b2 * (t - tau)));
-        }
+        double a = p[0], b1 = p[1], b2 = p[2], tau = p[3];
+        return a * (1 - Math.Exp(-EffectiveTime(t, b1, b2, tau)));
     }
     
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
         int n = tData.Length;
-
-        // 設定から累積比率を取得して「代表変化点候補」を決定
-        double tau0 = FindDayForCumulativeRatio(yData, GetChangePointRatio());
-
-        // 変化点前後で総欠陥数をざっくり半分ずつに分配
-        double a1 = maxY * 0.6;
-        double a2 = maxY * 0.6;
-
-        // b は設定から指数型の値を取得
-        double avgSlope = EstimateAverageSlope(yData);
-        double b1 = GetBValueExponential(avgSlope);
-        double b2 = b1;
-
-        return new[] { a1, b1, a2, b2, tau0 };
+        
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        bool isConverged = last - prev <= GetConvergenceThreshold();
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.3);
+        
+        double b0 = GetBValueExponential(EstimateAverageSlope(yData));
+        
+        return new[] { a0, b0, b0, InitialChangePoint(yData) };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -82,176 +86,54 @@ public class ExponentialChangePointModel : ChangePointModelBase
         int n = tData.Length;
         
         return (
-            new[] { 1.0, 0.001, 1.0, 0.001, 2.0 },
-            new[] { maxY * 3, 1.0, maxY * 3, 1.0, n - 2.0 }
+            new[] { maxY, 0.001, 0.001, 2.0 },
+            new[] { maxY * 5, 1.0, 1.0, n - 2.0 }
         );
     }
 }
 
 /// <summary>
 /// 遅延S字型 + 変化点モデル
-/// t ≤ τ: m₁(t) = a₁(1 - (1+b₁t)e^(-b₁t))
-/// t > τ: m₂(t) = m₁(τ) + a₂(1 - (1+b₂(t-τ))e^(-b₂(t-τ)))
+/// m(t) = a[1 - (1+b₁t)e^(-b₁t)]（t ≤ τ）
+/// m(t) = a[1 - (1+b₁τ)/(1+b₂τ)·(1+b₂t)·e^(-b₁τ-b₂(t-τ))]（t &gt; τ）
 /// </summary>
+/// <remarks>
+/// 遅延S字型の欠陥検出率（ハザード）h(t) = b²t/(1+bt) の b が τ で b₁ から b₂ に変わるとして導いた式。
+/// τ で m(t) と検出強度が連続になる（以前の実装は変化点直後に検出強度が 0 に落ちていた）。
+/// </remarks>
 public class DelayedSChangePointModel : ChangePointModelBase
 {
     public override string Name => "遅延S字型+変化点";
-    public override string Formula => "m(t) = a₁(1-(1+b₁t)e^(-b₁t)) [t≤τ], m₁(τ)+a₂(...) [t>τ]";
-    public override string Description => "遅延S字型に変化点を導入";
-    public override string[] ParameterNames => new[] { "a₁", "b₁", "a₂", "b₂", "τ" };
-    
-    /// <summary>
-    /// 漸近的総欠陥数: m(∞) = m₁(τ) + a₂
-    /// </summary>
-    /// <remarks>
-    /// 変化点前の集団は τ までしか検出されないため、a₁ 全体ではなく m₁(τ) のみが寄与する。
-    /// </remarks>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        double a2 = parameters[2];
-        double tau = parameters[4];
-        return Calculate(tau, parameters) + a2;
-    }
+    public override string Formula => "m(t) = a[1-(1+b₁t)e^(-b₁t)] [t≤τ], a[1-(1+b₁τ)/(1+b₂τ)(1+b₂t)e^(-b₁τ-b₂(t-τ))] [t>τ]";
+    public override string Description => "遅延S字型の検出率が変化点 τ で b₁ から b₂ に変わる";
+    public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "τ" };
     
     public override double Calculate(double t, double[] p)
     {
-        double a1 = p[0], b1 = p[1], a2 = p[2], b2 = p[3], tau = p[4];
+        double a = p[0], b1 = p[1], b2 = p[2], tau = p[3];
         
         if (t <= tau)
         {
-            return a1 * (1 - (1 + b1 * t) * Math.Exp(-b1 * t));
+            return a * (1 - (1 + b1 * t) * Math.Exp(-b1 * t));
         }
-        else
-        {
-            double m_tau = a1 * (1 - (1 + b1 * tau) * Math.Exp(-b1 * tau));
-            double dt = t - tau;
-            return m_tau + a2 * (1 - (1 + b2 * dt) * Math.Exp(-b2 * dt));
-        }
+        
+        double survival = (1 + b1 * tau) / (1 + b2 * tau) * (1 + b2 * t) * Math.Exp(-b1 * tau - b2 * (t - tau));
+        return a * (1 - survival);
     }
     
     public override double[] GetInitialParameters(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
         int n = tData.Length;
-
-        // 設定から累積比率を取得して変化点候補を決定
-        double tau0 = FindDayForCumulativeRatio(yData, GetChangePointRatio());
-
-        double a1 = maxY * 0.6;
-        double a2 = maxY * 0.6;
-
-        // b は設定からS字型の値を取得
-        double avgSlope = EstimateAverageSlope(yData);
-        double b1 = GetBValueSCurve(avgSlope);
-        double b2 = b1;
-
-        return new[] { a1, b1, a2, b2, tau0 };
-    }
-    
-    public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        int n = tData.Length;
         
-        return (
-            new[] { 1.0, 0.001, 1.0, 0.001, 2.0 },
-            new[] { maxY * 3, 1.0, maxY * 3, 1.0, n - 2.0 }
-        );
-    }
-}
-
-/// <summary>
-/// 不完全デバッグ + 変化点統合モデル
-/// dm(t)/dt = b(t)·[a(t) - m(t)]
-/// b(t) = b₁ (t≤τ), b₂ (t>τ)
-/// a(t) = a + α·m(t)
-/// </summary>
-public class ImperfectDebugChangePointModel : ChangePointModelBase
-{
-    public override string Name => "不完全デバッグ+変化点";
-    public override string Category => "変化点+不完全";
-    public override string Formula => "dm/dt = b(t)(a+αm-m), b変化点で切替";
-    public override string Description => "不完全デバッグと変化点を統合";
-    public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "α", "τ" };
-    
-    /// <summary>
-    /// 漸近的総欠陥数: α < 1 の場合 a / (1 - α)
-    /// </summary>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        double a = parameters[0];
-        double alpha = parameters[3];
-        
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        return a / (1 - alpha);
-    }
-    
-    public override double Calculate(double t, double[] p)
-    {
-        double a = p[0], b1 = p[1], b2 = p[2], alpha = p[3], tau = p[4];
-        
-        if (alpha >= 1.0)
-            alpha = 0.99;
-        
-        if (t <= tau)
-        {
-            // 変化点前
-            double factor = 1 - alpha;
-            double expTerm = Math.Exp(-b1 * factor * t);
-            double num = a * (1 - expTerm);
-            double denom = 1 - alpha * (1 - expTerm);
-            return denom > 0 ? num / denom : a;
-        }
-        else
-        {
-            // 変化点τでの値
-            double factor1 = 1 - alpha;
-            double expTerm1 = Math.Exp(-b1 * factor1 * tau);
-            double num1 = a * (1 - expTerm1);
-            double denom1 = 1 - alpha * (1 - expTerm1);
-            double m_tau = denom1 > 0 ? num1 / denom1 : a;
-            
-            // 変化点後（τからの相対時間で再計算）
-            // 残存バグ数を考慮
-            double remainingA = a + alpha * m_tau - m_tau;
-            if (remainingA <= 0)
-                return m_tau;
-            
-            double dt = t - tau;
-            double factor2 = 1 - alpha;
-            double expTerm2 = Math.Exp(-b2 * factor2 * dt);
-            double increment = remainingA * (1 - expTerm2) / (1 - alpha * (1 - expTerm2));
-            
-            return m_tau + Math.Max(0, increment);
-        }
-    }
-    
-    public override double[] GetInitialParameters(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        int n = tData.Length;
-
-        // 設定から累積比率を取得して変化点候補を決定
-        double tau0 = FindDayForCumulativeRatio(yData, GetChangePointRatio());
-
-        // a: 設定から取得
         double last = yData[^1];
         double prev = n > 1 ? yData[^2] : yData[^1];
-        double increment = last - prev;
-        bool isConverged = increment <= GetConvergenceThreshold();
-        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.3);  // 中程度のスケール
-
-        // b₁, b₂: 設定から指数型の値を取得
-        double avgSlope = EstimateAverageSlope(yData);
-        double b1 = GetBValueExponential(avgSlope);
-        double b2 = b1;
-
-        // α: 設定から取得
-        double alpha0 = GetAlpha0();
-
-        return new[] { a0, b1, b2, alpha0, tau0 };
+        bool isConverged = last - prev <= GetConvergenceThreshold();
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.3);
+        
+        double b0 = GetBValueSCurve(EstimateAverageSlope(yData));
+        
+        return new[] { a0, b0, b0, InitialChangePoint(yData) };
     }
     
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
@@ -260,15 +142,65 @@ public class ImperfectDebugChangePointModel : ChangePointModelBase
         int n = tData.Length;
         
         return (
-            new[] { maxY, 0.001, 0.001, 0.0, 2.0 },
-            new[] { maxY * 5, 1.0, 1.0, 0.5, n - 2.0 }
+            new[] { maxY, 0.001, 0.001, 2.0 },
+            new[] { maxY * 5, 2.0, 2.0, n - 2.0 }
         );
     }
 }
 
 /// <summary>
-/// 複数変化点モデル
-/// 最大3つの変化点をサポート
+/// 変曲S字型 + 変化点モデル
+/// m(t) = a(1 - e^(-u(t))) / (1 + ψ·e^(-u(t)))
+/// </summary>
+/// <remarks>
+/// Ohba (1984) の変曲S字型に実効時間方式の変化点を導入したもの。m(∞) = a。
+/// 以前は「不完全デバッグ+変化点(実効時間)」と表記していたが、ψ は変曲の形状パラメータで
+/// 新規バグの混入を表すものではない（<see cref="InflectionSModel"/> 参照）。
+/// </remarks>
+public class InflectionSChangePointModel : ChangePointModelBase
+{
+    public override string Name => "変曲S字型+変化点";
+    public override string Formula => "m(t) = a(1-e^(-u(t)))/(1+ψ·e^(-u(t))), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]";
+    public override string Description => "変曲S字型（Ohba）の検出率が変化点 τ で b₁ から b₂ に変わる";
+    public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "ψ", "τ" };
+
+    public override double Calculate(double t, double[] p)
+    {
+        double a = p[0], b1 = p[1], b2 = p[2], psi = p[3], tau = p[4];
+        double expU = Math.Exp(-EffectiveTime(t, b1, b2, tau));
+        return a * (1 - expU) / (1 + psi * expU);
+    }
+
+    public override double[] GetInitialParameters(double[] tData, double[] yData)
+    {
+        double maxY = yData.Max();
+        int n = tData.Length;
+
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        bool isConverged = last - prev <= GetConvergenceThreshold();
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.3);
+
+        double b0 = GetBValueExponential(EstimateAverageSlope(yData));
+
+        return new[] { a0, b0, b0, 1.0, InitialChangePoint(yData) };
+    }
+
+    public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
+    {
+        double maxY = yData.Max();
+        int n = tData.Length;
+
+        return (
+            new[] { maxY, 0.001, 0.001, 0.0, 2.0 },
+            new[] { maxY * 5, 1.0, 1.0, 1000.0, n - 2.0 }
+        );
+    }
+}
+
+/// <summary>
+/// 複数変化点モデル（指数型）
+/// m(t) = a(1 - e^(-u(t)))、u(t) は変化点ごとに傾き bᵢ が変わる区分線形の実効時間
 /// </summary>
 public class MultipleChangePointModel : ChangePointModelBase
 {
@@ -280,103 +212,45 @@ public class MultipleChangePointModel : ChangePointModelBase
     }
     
     public override string Name => $"複数変化点({_numChangePoints}点)";
-    public override string Formula => $"指数型モデルに{_numChangePoints}個の変化点";
+    public override string Formula => $"m(t) = a(1-e^(-u(t))), u(t) は {_numChangePoints} 個の変化点で傾きが変わる区分線形";
     public override string Description => $"{_numChangePoints}個の変化点で欠陥検出率が変化";
     
     public override string[] ParameterNames
     {
         get
         {
-            var names = new List<string>();
-            for (int i = 0; i <= _numChangePoints; i++)
-            {
-                names.Add($"a{i + 1}");
-                names.Add($"b{i + 1}");
-            }
+            var names = new List<string> { "a" };
+            for (int i = 1; i <= _numChangePoints + 1; i++)
+                names.Add($"b{i}");
             for (int i = 1; i <= _numChangePoints; i++)
-            {
                 names.Add($"τ{i}");
-            }
             return names.ToArray();
         }
-    }
-    
-    /// <summary>
-    /// 漸近的総欠陥数: m(∞) = Σ_{i&lt;最終} a_i(1-e^(-b_i(τ_i-τ_{i-1}))) + a_最終
-    /// </summary>
-    /// <remarks>
-    /// 途中のセグメントは次の変化点までしか検出されないため、a_i 全体ではなく
-    /// そのセグメント区間での検出分のみが寄与する。
-    /// </remarks>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        int numSegments = _numChangePoints + 1;
-        var tau = new double[_numChangePoints];
-        for (int i = 0; i < _numChangePoints; i++)
-        {
-            tau[i] = parameters[numSegments * 2 + i];
-        }
-        Array.Sort(tau);
-        
-        double total = 0;
-        for (int i = 0; i < numSegments - 1; i++)
-        {
-            double segStart = (i == 0) ? 0 : tau[i - 1];
-            double dt = tau[i] - segStart;
-            if (dt > 0)
-            {
-                total += parameters[i * 2] * (1 - Math.Exp(-parameters[i * 2 + 1] * dt));
-            }
-        }
-        return total + parameters[(numSegments - 1) * 2];
     }
     
     public override double Calculate(double t, double[] p)
     {
         int numSegments = _numChangePoints + 1;
+        double a = p[0];
         
-        // パラメータ抽出
-        var a = new double[numSegments];
-        var b = new double[numSegments];
         var tau = new double[_numChangePoints];
-        
-        for (int i = 0; i < numSegments; i++)
-        {
-            a[i] = p[i * 2];
-            b[i] = p[i * 2 + 1];
-        }
         for (int i = 0; i < _numChangePoints; i++)
-        {
-            tau[i] = p[numSegments * 2 + i];
-        }
-        
-        // 変化点をソート
+            tau[i] = p[1 + numSegments + i];
         Array.Sort(tau);
         
-        // どのセグメントにいるか判定
-        int segment = 0;
-        for (int i = 0; i < _numChangePoints; i++)
+        // 区分線形の実効時間 u(t) = Σ bᵢ × (区間 i 内で経過した時間)
+        double u = 0;
+        double segStart = 0;
+        for (int i = 0; i < numSegments; i++)
         {
-            if (t > tau[i])
-                segment = i + 1;
+            double segEnd = i < _numChangePoints ? tau[i] : double.PositiveInfinity;
+            double dt = Math.Min(t, segEnd) - segStart;
+            if (dt <= 0) break;
+            u += p[1 + i] * dt;
+            segStart = segEnd;
         }
         
-        // 累積値を計算
-        double cumulative = 0;
-        
-        for (int i = 0; i <= segment; i++)
-        {
-            double segStart = (i == 0) ? 0 : tau[i - 1];
-            double segEnd = (i < segment) ? tau[i] : t;
-            double dt = segEnd - segStart;
-            
-            if (dt > 0)
-            {
-                cumulative += a[i] * (1 - Math.Exp(-b[i] * dt));
-            }
-        }
-        
-        return cumulative;
+        return a * (1 - Math.Exp(-u));
     }
     
     public override double[] GetInitialParameters(double[] tData, double[] yData)
@@ -384,34 +258,21 @@ public class MultipleChangePointModel : ChangePointModelBase
         double maxY = yData.Max();
         int n = tData.Length;
         int numSegments = _numChangePoints + 1;
-
-        var initial = new List<double>();
-
-        // セグメントごとの a は maxY を均等割りしつつ、やや余裕を持たせる
-        double segmentBugs = maxY * 1.2 / numSegments;
-        double avgSlope = EstimateAverageSlope(yData);
-        double baseB = avgSlope switch
-        {
-            <= 0.1 => 0.05,
-            <= 0.5 => 0.1,
-            <= 1.0 => 0.2,
-            _ => 0.3
-        };
-
+        
+        double last = yData[^1];
+        double prev = n > 1 ? yData[^2] : yData[^1];
+        bool isConverged = last - prev <= GetConvergenceThreshold();
+        
+        var initial = new List<double> { maxY * GetScaleFactorAInRange(isConverged, 0.3) };
+        
+        double b0 = GetBValueExponential(EstimateAverageSlope(yData));
         for (int i = 0; i < numSegments; i++)
-        {
-            initial.Add(segmentBugs);
-            initial.Add(baseB);
-        }
-
-        // 変化点は累積(1/(numSegments+1), 2/(numSegments+1), ...)到達日をそれぞれ候補に
+            initial.Add(b0);
+        
+        // 変化点は累積 1/(k+1), 2/(k+1), ... 到達日をそれぞれ候補に
         for (int i = 1; i <= _numChangePoints; i++)
-        {
-            double ratio = i / (double)(numSegments + 1);
-            double tau = FindDayForCumulativeRatio(yData, ratio);
-            initial.Add(tau);
-        }
-
+            initial.Add(FindDayForCumulativeRatio(yData, i / (double)numSegments));
+        
         return initial.ToArray();
     }
     
@@ -421,14 +282,12 @@ public class MultipleChangePointModel : ChangePointModelBase
         int n = tData.Length;
         int numSegments = _numChangePoints + 1;
         
-        var lower = new List<double>();
-        var upper = new List<double>();
+        var lower = new List<double> { maxY };
+        var upper = new List<double> { maxY * 5 };
         
         for (int i = 0; i < numSegments; i++)
         {
-            lower.Add(1.0);
             lower.Add(0.001);
-            upper.Add(maxY * 2);
             upper.Add(1.0);
         }
         
@@ -441,6 +300,64 @@ public class MultipleChangePointModel : ChangePointModelBase
         return (lower.ToArray(), upper.ToArray());
     }
 }
+
+/// <summary>
+/// 変化点 τ を固定した変化点モデル（プロファイル尤度法用）
+/// </summary>
+/// <remarks>
+/// τ をパラメータ列の最後に持つ変化点モデルを包み、τ を除いたパラメータで推定できるようにする。
+/// 式は元のモデルのものをそのまま使うため、元のモデルと食い違うことがない。
+/// </remarks>
+public sealed class FixedTauChangePointModel : ReliabilityGrowthModelBase
+{
+    private readonly ChangePointModelBase _baseModel;
+    
+    /// <summary>固定した変化点 τ</summary>
+    public double FixedTau { get; }
+    
+    /// <summary>元の変化点モデル</summary>
+    public ChangePointModelBase BaseModel => _baseModel;
+    
+    public FixedTauChangePointModel(ChangePointModelBase baseModel, double fixedTau)
+    {
+        if (!Supports(baseModel))
+            throw new ArgumentException($"{baseModel.Name} は τ を最後のパラメータに1つだけ持つ変化点モデルではありません", nameof(baseModel));
+        _baseModel = baseModel;
+        FixedTau = fixedTau;
+    }
+    
+    /// <summary>
+    /// τ を最後のパラメータに1つだけ持つ変化点モデルか
+    /// </summary>
+    public static bool Supports(ChangePointModelBase model) => model.ParameterNames[^1] == "τ";
+    
+    public override string Name => $"{_baseModel.Name}(τ={FixedTau:0.##})";
+    public override string Category => _baseModel.Category;
+    public override string Formula => _baseModel.Formula;
+    public override string Description => $"変化点 τ={FixedTau:0.##} で固定した{_baseModel.Name}";
+    public override string[] ParameterNames => _baseModel.ParameterNames[..^1];
+    
+    /// <summary>
+    /// τ を付け加えた元のモデルのパラメータ列
+    /// </summary>
+    public double[] ToFullParameters(double[] parameters) => [.. parameters, FixedTau];
+    
+    public override double Calculate(double t, double[] parameters)
+        => _baseModel.Calculate(t, ToFullParameters(parameters));
+    
+    public override double GetAsymptoticTotalBugs(double[] parameters)
+        => _baseModel.GetAsymptoticTotalBugs(ToFullParameters(parameters));
+    
+    public override double[] GetInitialParameters(double[] tData, double[] yData)
+        => _baseModel.GetInitialParameters(tData, yData)[..^1];
+    
+    public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
+    {
+        var (lower, upper) = _baseModel.GetBounds(tData, yData);
+        return (lower[..^1], upper[..^1]);
+    }
+}
+
 
 /// <summary>
 /// 変化点検出ユーティリティ
@@ -525,138 +442,6 @@ public static class ChangePointDetector
 }
 
 /// <summary>
-/// 不完全デバッグ＋変化点モデル（実効時間 u(t) 方式）
-/// m(t) = a * (1 - e^(-u(t))) / (1 + p * e^(-u(t)))
-/// u(t) = b₁*t (t ≤ τ), b₁*τ + b₂*(t-τ) (t > τ)
-/// </summary>
-/// <remarks>
-/// <para>
-/// 不完全デバッグモデル（Pham 1993）に検出率変化点を導入したモデル。
-/// 「実効テスト時間」u(t)を導入することでm(t)がτ前後で自動的に連続となる。
-/// </para>
-/// <para>
-/// パラメータの解釈:
-/// - b₂ > b₁: テスト強化（変化点以降の収束が加速）
-/// - b₂ &lt; b₁: テスト弱体化（変化点以降の収束が減速）
-/// - p: 不完全デバッグ係数（0 ≤ p &lt; 1）
-/// </para>
-/// </remarks>
-public class ImperfectDebugExponentialChangePointModel : ChangePointModelBase
-{
-    public override string Name => "不完全デバッグ+変化点(実効時間)";
-    public override string Category => "変化点+不完全";
-    public override string Formula => "m(t) = a(1-e^(-u(t)))/(1+p·e^(-u(t))), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]";
-    public override string Description => "不完全デバッグモデルに検出率変化点を導入（実効時間方式）";
-    public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "p", "τ" };
-
-    /// <summary>
-    /// 漸近的総欠陥数
-    /// t→∞ で u(t)→∞ より m(∞) = a
-    /// </summary>
-    /// <remarks>
-    /// 数学的には m(∞) = lim[t→∞] a(1-e^(-u))/(1+p·e^(-u)) = a/1 = a
-    /// つまり、不完全デバッグパラメータ p に関わらず漸近値は a となる。
-    /// </remarks>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        double a = parameters[0];
-        // t → ∞ で e^(-u) → 0 より、m(∞) = a(1-0)/(1+0) = a
-        return a;
-    }
-
-    public override double Calculate(double t, double[] parameters)
-    {
-        double a = parameters[0];
-        double b1 = parameters[1];
-        double b2 = parameters[2];
-        double p = parameters[3];
-        double tau = parameters[4];
-
-        // 実効テスト時間 u(t) を計算
-        double u;
-        if (t <= tau)
-        {
-            u = b1 * t;
-        }
-        else
-        {
-            u = b1 * tau + b2 * (t - tau);
-        }
-
-        // PNZ型の式: m(t) = a * (1 - e^(-u)) / (1 + p * e^(-u))
-        double expU = Math.Exp(-u);
-        double numerator = a * (1 - expU);
-        double denominator = 1 + p * expU;
-
-        // 分母が0に近い場合の保護
-        if (Math.Abs(denominator) < 1e-10)
-            return a;
-
-        return numerator / denominator;
-    }
-
-    public override double[] GetInitialParameters(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        int n = tData.Length;
-
-        // 累積50%到達日を変化点候補に
-        double tau0 = FindDayForCumulativeRatio(yData, 0.5);
-
-        // a: 不完全デバッグを考慮して 1.3〜1.7×maxY
-        double last = yData[^1];
-        double prev = n > 1 ? yData[^2] : yData[^1];
-        double increment = last - prev;
-        double a0 = increment <= 1.0 ? maxY * 1.3 : maxY * 1.7;
-
-        // b₁, b₂: 平均増分から指数型と同様に初期化し、まずは同じ値から開始
-        double avgSlope = EstimateAverageSlope(yData);
-        double b1 = avgSlope switch
-        {
-            <= 0.1 => 0.05,
-            <= 0.5 => 0.1,
-            <= 1.0 => 0.2,
-            _ => 0.3
-        };
-        double b2 = b1;
-
-        double p0 = 0.1;
-
-        return new[] {
-            a0,
-            b1,
-            b2,
-            p0,
-            tau0
-        };
-    }
-
-    public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        int n = tData.Length;
-
-        // p の下限は 0（学術的標準）
-        return (
-            new[] {
-                maxY,      // a: 下限は観測最大値
-                1e-8,      // b₁: 正の小さな値
-                1e-8,      // b₂: 正の小さな値
-                0.0,       // p: 学術的標準では 0 ≤ p < 1
-                2.0        // τ: 最小インデックス+1
-            },
-            new[] {
-                maxY * 100, // a: 上限は観測最大値の100倍
-                10.0,       // b₁
-                10.0,       // b₂
-                0.99,       // p: 上限は 1 未満
-                n - 2.0     // τ: 最大インデックス-2
-            }
-        );
-    }
-}
-
-/// <summary>
 /// 変化点モデルのファクトリ
 /// </summary>
 public static class ChangePointModelFactory
@@ -665,8 +450,7 @@ public static class ChangePointModelFactory
     {
         yield return new ExponentialChangePointModel();
         yield return new DelayedSChangePointModel();
-        yield return new ImperfectDebugChangePointModel();
-        yield return new ImperfectDebugExponentialChangePointModel();
+        yield return new InflectionSChangePointModel();
         yield return new MultipleChangePointModel(2);
     }
 
@@ -674,14 +458,5 @@ public static class ChangePointModelFactory
     {
         yield return new ExponentialChangePointModel();
         yield return new DelayedSChangePointModel();
-    }
-
-    /// <summary>
-    /// 不完全デバッグ＋変化点モデルを取得
-    /// </summary>
-    public static IEnumerable<ReliabilityGrowthModelBase> GetImperfectDebugChangePointModels()
-    {
-        yield return new ImperfectDebugChangePointModel();
-        yield return new ImperfectDebugExponentialChangePointModel();
     }
 }

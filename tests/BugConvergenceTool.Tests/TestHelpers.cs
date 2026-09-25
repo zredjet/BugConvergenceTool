@@ -65,7 +65,14 @@ internal static class TestHelpers
                 yield return (ReliabilityGrowthModelBase)ctor.Invoke(ps.Select(p => p.DefaultValue).ToArray());
             }
 
-            if (ps.Length == 1 && ps[0].ParameterType == typeof(ITestEffortFunction))
+            if (type == typeof(FixedTauChangePointModel))
+            {
+                // τ を最後に1つ持つ変化点モデルを τ=15 で固定したもの
+                foreach (var baseModel in ChangePointModelFactory.GetAllChangePointModels()
+                             .OfType<ChangePointModelBase>().Where(FixedTauChangePointModel.Supports))
+                    yield return new FixedTauChangePointModel(baseModel, 15);
+            }
+            else if (ps.Length == 1 && ps[0].ParameterType == typeof(ITestEffortFunction))
             {
                 foreach (var tef in TEFFactory.GetAllTEFs())
                     yield return (ReliabilityGrowthModelBase)ctor.Invoke(new object[] { tef });

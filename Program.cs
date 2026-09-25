@@ -95,7 +95,6 @@ class Program
         
         // 使用モデルの表示
         var modelTypes = new List<string> { "基本" };
-        if (options.IncludeImperfectDebug) modelTypes.Add("不完全デバッグ");
         if (options.IncludeChangePoint) modelTypes.Add("変化点");
         if (options.IncludeTEF) modelTypes.Add("TEF組込");
         if (options.IncludeFRE) modelTypes.Add("FRE");
@@ -123,7 +122,7 @@ class Program
         }
         else
         {
-            results = fitter.FitAllModels(options.IncludeImperfectDebug);
+            results = fitter.FitAllModels();
         }
         
         var bestResult = fitter.GetBestModel(results);
@@ -375,8 +374,6 @@ class Program
                 
                 if (isBest)
                     Console.ForegroundColor = ConsoleColor.Green;
-                else if (result.Category == "不完全デバッグ")
-                    Console.ForegroundColor = ConsoleColor.Yellow;
                 
                 string modelNameWithMarker = result.ModelName + (isBest ? " *" : "");
                 string line = $"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.SelectionScore,colNum:F2} {result.SelectionScore - minScore,colNum:F2}";
@@ -530,26 +527,7 @@ class Program
         Console.WriteLine("パラメータ推定結果:");
         foreach (var (name, value) in bestResult.Parameters)
         {
-            string desc = name switch
-            {
-                "a" => "（規模パラメータ。潜在バグ総数は m(∞)）",
-                "b" => "（バグ発見率）",
-                "c" => "（形状パラメータ）",
-                "p" => "（不完全デバッグ率）",
-                "τ" or "tau" => "（変化点）",
-                "b1" => "（変化点前の発見率）",
-                "b2" => "（変化点後の発見率）",
-                "η" or "eta" => "（欠陥除去効率）",
-                "α" or "alpha" => "（バグ混入率）",
-                "β" or "beta" => "（スケールパラメータ）",
-                "γ" or "gamma" => "（形状パラメータ）",
-                _ => ""
-            };
-            
-            if (name == "p" || name == "η" || name == "eta")
-                Console.WriteLine($"  {name} = {value:F4} ({value * 100:F1}%) {desc}");
-            else
-                Console.WriteLine($"  {name} = {value:F4} {desc}");
+            Console.WriteLine($"  {ParameterDescriptions.FormatLine(name, value)}");
         }
         
         Console.WriteLine("\n適合度指標:");
@@ -592,10 +570,6 @@ class Program
         else
         {
             models.AddRange(ModelFactory.GetAllModels());
-            if (options.IncludeImperfectDebug)
-            {
-                models.AddRange(ModelFactory.GetAllModels().Where(m => m.Category.Contains("不完全")));
-            }
         }
         
         return models
@@ -646,7 +620,8 @@ class Program
                     break;
                     
                 case "--basic-only":
-                    options.IncludeImperfectDebug = false;
+                    // 不完全デバッグモデルを削除したため、拡張オプションなしでは常に基本モデルのみを使用する
+                    options.Notices.Add("--basic-only は不要になりました（拡張オプションを指定しなければ基本モデルのみを使用します）。このオプションは無視されます。");
                     break;
                     
                 case "-v":
@@ -686,7 +661,7 @@ class Program
                     break;
 
                 case "--coverage":
-                    // 擬似Coverageモデルは基本モデル（Ohba型・ロジスティック・ゴンペルツ）と数学的に同一のため廃止
+                    // 擬似Coverageモデルは基本モデル（Goel一般化・ロジスティック・ゴンペルツ）の再パラメータ化で同一のため廃止
                     options.Notices.Add("--coverage は廃止しました（擬似Coverageモデルは基本モデルの再パラメータ化で同一のモデルのため）。このオプションは無視されます。");
                     break;
 
@@ -782,7 +757,6 @@ class Program
         Console.WriteLine("オプション:");
         Console.WriteLine("  -h, --help            ヘルプを表示");
         Console.WriteLine("  -o, --output DIR      出力ディレクトリを指定");
-        Console.WriteLine("  --basic-only          基本モデルのみ使用（不完全デバッグモデルを除外）");
         Console.WriteLine("  -v, --verbose         詳細出力");
         Console.WriteLine();
         Console.WriteLine("  --optimizer TYPE      最適化アルゴリズムを指定:");
@@ -856,7 +830,6 @@ class CommandOptions
     public string? OutputDir { get; set; }
     public string? ConfigFile { get; set; }
     public bool ShowHelp { get; set; }
-    public bool IncludeImperfectDebug { get; set; } = true;
     public bool Verbose { get; set; }
     public OptimizerType Optimizer { get; set; } = OptimizerType.DifferentialEvolution;
     

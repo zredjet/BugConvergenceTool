@@ -78,8 +78,7 @@ public class ExcelWriter
         ws.Cell("B16").Value = bestResult.Parameters.GetValueOrDefault("b", 0);
         ws.Cell("B17").Value = bestResult.Parameters.ContainsKey("c") 
             ? bestResult.Parameters["c"].ToString("F4") : "-";
-        ws.Cell("B18").Value = bestResult.ImperfectDebugRate.HasValue 
-            ? $"{bestResult.ImperfectDebugRate.Value * 100:F1}%" : "-";
+        ws.Cell("B18").Value = "-";  // 旧「不完全デバッグ率」欄（該当モデルは削除済み）
         
         // 適合度指標
         ws.Cell("B20").Value = bestResult.R2;
@@ -100,8 +99,8 @@ public class ExcelWriter
         // ヘッダー（ホールドアウト検証の列を追加）
         var hasHoldout = results.Any(r => r.Holdout != null);
         var headers = hasHoldout 
-            ? new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "不完全デバッグ率", "HO予測発見数", "HO実測発見数", "HO誤差(%)", "HO日次MAE", "損失関数", "95%発見日", "99%発見日" }
-            : new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "不完全デバッグ率", "95%発見日", "99%発見日" };
+            ? new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "HO予測発見数", "HO実測発見数", "HO誤差(%)", "HO日次MAE", "損失関数", "95%発見日", "99%発見日" }
+            : new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "95%発見日", "99%発見日" };
         for (int i = 0; i < headers.Length; i++)
         {
             var cell = ws.Cell(startRow + 1, i + 1);
@@ -129,8 +128,6 @@ public class ExcelWriter
             ws.Cell(row, col++).Value = result.ModelSelectionCriterion;
             ws.Cell(row, col++).Value = delta;
             ws.Cell(row, col++).Value = result.EstimatedTotalBugs;
-            ws.Cell(row, col++).Value = result.ImperfectDebugRate.HasValue 
-                ? $"{result.ImperfectDebugRate.Value * 100:F1}%" : "-";
             
             // ホールドアウト検証結果
             if (hasHoldout)
@@ -163,11 +160,6 @@ public class ExcelWriter
             if (result.ModelName == bestResult.ModelName)
             {
                 ws.Range(row, 1, row, maxCol).Style.Fill.BackgroundColor = XLColor.LightGreen;
-            }
-            // 不完全デバッグモデルを別色
-            else if (result.Category == "不完全デバッグ")
-            {
-                ws.Range(row, 1, row, maxCol).Style.Fill.BackgroundColor = XLColor.FromHtml("#FFE4B5");
             }
             
             row++;

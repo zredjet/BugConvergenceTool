@@ -97,15 +97,27 @@ public class DelayedSModel : ReliabilityGrowthModelBase
 }
 
 /// <summary>
-/// ゴンペルツモデル
-/// m(t) = a * exp(-b * exp(-c*t))
+/// ゴンペルツモデル（切断型）
+/// m(t) = a·(e^(-b·e^(-ct)) - e^(-b)) / (1 - e^(-b))
 /// </summary>
+/// <remarks>
+/// <para>
+/// ゴンペルツ曲線 G(t) = e^(-b·e^(-ct)) は G(0) = e^(-b) ≠ 0 のため、そのまま m(t) = a·G(t) とすると
+/// 観測開始前に a·e^(-b) 件が発見済みという扱いになる。NHPP の尤度は増分 m(tᵢ) - m(tᵢ₋₁) で決まるため、
+/// この観測されない質量が a に含まれ、推定総バグ数が過大になる。
+/// </para>
+/// <para>
+/// そこで G を t ≥ 0 に切断して正規化した m(t) = a·(G(t) - G(0)) / (1 - G(0)) を用いる。
+/// m(0) = 0、m(∞) = a となり、a がそのまま潜在バグ総数を表す。
+/// ゴンペルツ型 SRGM を NHPP として扱う場合の標準的な形であり、b が大きいと通常のゴンペルツ曲線に近づく。
+/// </para>
+/// </remarks>
 public class GompertzModel : ReliabilityGrowthModelBase
 {
-    public override string Name => "ゴンペルツ";
+    public override string Name => "ゴンペルツ（切断型）";
     public override string Category => "基本";
-    public override string Formula => "m(t) = a·e^(-b·e^(-ct))";
-    public override string Description => "終盤の収束が急";
+    public override string Formula => "m(t) = a(e^(-b·e^(-ct)) - e^(-b)) / (1 - e^(-b))";
+    public override string Description => "非対称S字。終盤の収束が急。m(0)=0 に切断・正規化したゴンペルツ曲線";
     public override string[] ParameterNames => new[] { "a", "b", "c" };
 
     public override double Calculate(double t, double[] parameters)
@@ -113,7 +125,8 @@ public class GompertzModel : ReliabilityGrowthModelBase
         double a = parameters[0];
         double b = parameters[1];
         double c = parameters[2];
-        return a * Math.Exp(-b * Math.Exp(-c * t));
+        double g0 = Math.Exp(-b);
+        return a * (Math.Exp(-b * Math.Exp(-c * t)) - g0) / (1 - g0);
     }
 
     public override double[] GetInitialParameters(double[] tData, double[] yData)
@@ -143,118 +156,19 @@ public class GompertzModel : ReliabilityGrowthModelBase
         double maxY = yData.Max();
         return (
             new[] { maxY, 0.1, 0.001 },
-            new[] { maxY * 5, 10.0, 1.0 }
+            new[] { maxY * 5, 20.0, 1.0 }
         );
     }
 }
 
 /// <summary>
-/// Shifted Gompertz SRGM（シフトゴンペルツモデル）
-/// m(t) = a(e^(-b·e^(-ct)) - e^(-b))
-/// </summary>
-/// <remarks>
-/// <para>
-/// 標準ゴンペルツモデルの m(0) ≠ 0 問題を解決した変形版。
-/// t=0 で m(0)=0 を保証し、SRGM の境界条件を満たします。
-/// </para>
-/// <para>
-/// <strong>学術的注記:</strong>
-/// このモデルは「Shifted Gompertz」として知られる形式の SRGM への適用です。
-/// 標準的なゴンペルツSRGM文献とは異なる独自形式であることに注意してください。
-/// 統計学分野のShifted Gompertz分布との関連性があります。
-/// </para>
-/// <para>
-/// 特徴:
-/// - m(0) = a(e^(-b) - e^(-b)) = 0（境界条件を満足）
-/// - m(∞) = a(1 - e^(-b))（b が大きいほど a に近づく）
-/// - 非対称S字型成長（初期は緩やか、後半で急速に飽和）
-/// </para>
-/// <para>
-/// <strong>漸近値に関する重要な注意:</strong>
-/// 漸近値は a ではなく a(1-e^(-b)) です。
-/// b=3 で約95%、b=5 で約99%が a に到達します。
-/// パラメータ a の解釈時にはこの点を考慮してください。
-/// </para>
-/// <para>
-/// 参考文献:
-/// - Bemmaor, A.C. (1994). "Modeling the Diffusion of New Durable Goods: Word-of-Mouth Effect Versus Consumer Heterogeneity"
-/// - 統計学における Shifted Gompertz 分布の SRGM への応用
-/// </para>
-/// </remarks>
-public class ModifiedGompertzModel : ReliabilityGrowthModelBase
-{
-    public override string Name => "Shiftedゴンペルツ";
-    public override string Category => "基本";
-    public override string Formula => "m(t) = a(e^(-b·e^(-ct)) - e^(-b))";
-    public override string Description => "シフトゴンペルツ型。m(0)=0保証、漸近値はa(1-e^(-b))";
-    public override string[] ParameterNames => new[] { "a", "b", "c" };
-
-    public override double Calculate(double t, double[] parameters)
-    {
-        double a = parameters[0];
-        double b = parameters[1];
-        double c = parameters[2];
-        double expNegB = Math.Exp(-b);
-        return a * (Math.Exp(-b * Math.Exp(-c * t)) - expNegB);
-    }
-    
-    /// <summary>
-    /// 漸近的総欠陥数: t→∞ で m(t) → a(1 - e^(-b))
-    /// </summary>
-    /// <remarks>
-    /// 注意: 漸近値は a ではなく a(1-e^(-b)) です。
-    /// b が大きいほど a に近づきます（b=3で約95%、b=5で約99%）。
-    /// </remarks>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        double a = parameters[0];
-        double b = parameters[1];
-        return a * (1 - Math.Exp(-b));
-    }
-
-    public override double[] GetInitialParameters(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        int n = tData.Length;
-
-        // a: 漸近値は a(1-e^(-b)) なので、初期 a は maxY より大きめに設定
-        double last = yData[^1];
-        double prev = n > 1 ? yData[^2] : yData[^1];
-        double increment = last - prev;
-        bool isConverged = increment <= GetConvergenceThreshold();
-        // 漸近値が a(1-e^(-b)) ≈ 0.95a (b=3の場合) なので、少し大きめに
-        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.4);
-
-        // b: 初期遅延係数（大きいほど漸近値が a に近づく）
-        // b=3 で 95%、b=5 で 99% なので、3〜5 程度を初期値に
-        double b0 = GetGompertzB0();
-
-        // c: 成長率。累積比率から推定
-        double day50 = FindDayForCumulativeRatio(yData, GetChangePointRatio());
-        double c0 = 1.0 / Math.Max(1.0, day50);
-
-        return new[] { a0, b0, c0 };
-    }
-
-    public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
-    {
-        double maxY = yData.Max();
-        return (
-            new[] { maxY, 0.5, 0.001 },      // b >= 0.5 で漸近値が a の約40%以上
-            new[] { maxY * 6, 10.0, 1.0 }    // a の上限を少し高めに（漸近値補正のため）
-        );
-    }
-}
-
-/// <summary>
-/// Ohbaモデル（一般化指数型 / Weibull型SRGM）
+/// 一般化 Goel-Okumoto モデル（Weibull型）
 /// m(t) = a(1 - e^(-b·t^c))
 /// </summary>
 /// <remarks>
 /// <para>
-/// Ohba (1984) による一般化指数型NHPPモデル。
-/// Weibull分布に基づく欠陥検出率を持ち、形状パラメータ c により
-/// 多様な成長曲線を表現できる汎用的なモデルです。
+/// Goel (1985) による Goel-Okumoto モデルの一般化。欠陥検出率が Weibull 型で、
+/// 形状パラメータ c により多様な成長曲線を表現できる。
 /// </para>
 /// <para>
 /// 特徴:
@@ -263,16 +177,17 @@ public class ModifiedGompertzModel : ReliabilityGrowthModelBase
 /// - c &lt; 1: 凸型（初期に急速、後半に減速）
 /// </para>
 /// <para>
-/// 参照: Ohba, M. (1984). "Software Reliability Analysis Models." 
-/// IBM Journal of Research and Development, 28(4), 428-443.
+/// 参照: Goel, A.L. (1985). "Software Reliability Models: Assumptions, Limitations, and Applicability."
+/// IEEE Transactions on Software Engineering, SE-11(12), 1411-1423.
+/// （以前は Ohba 型と表記していたが、この式は Goel (1985) のもの）
 /// </para>
 /// </remarks>
-public class OhbaWeibullModel : ReliabilityGrowthModelBase
+public class GeneralizedGoelOkumotoModel : ReliabilityGrowthModelBase
 {
-    public override string Name => "Ohba型（Weibull）";
+    public override string Name => "Goel一般化（Weibull型）";
     public override string Category => "基本";
     public override string Formula => "m(t) = a(1 - e^(-b·t^c))";
-    public override string Description => "一般化指数型。c>1でS字、c=1で指数型、c<1で凸型";
+    public override string Description => "Goel (1985) の一般化GO。c>1でS字、c=1で指数型、c<1で凸型";
     public override string[] ParameterNames => new[] { "a", "b", "c" };
 
     public override double Calculate(double t, double[] parameters)
@@ -284,14 +199,6 @@ public class OhbaWeibullModel : ReliabilityGrowthModelBase
         // t^c の計算（t=0 の場合は 0）
         double tc = t > 0 ? Math.Pow(t, c) : 0;
         return a * (1 - Math.Exp(-b * tc));
-    }
-    
-    /// <summary>
-    /// 漸近的総欠陥数: t→∞ で m(t) → a
-    /// </summary>
-    public override double GetAsymptoticTotalBugs(double[] parameters)
-    {
-        return parameters[0];  // a
     }
 
     public override double[] GetInitialParameters(double[] tData, double[] yData)
@@ -339,23 +246,46 @@ public class OhbaWeibullModel : ReliabilityGrowthModelBase
 }
 
 /// <summary>
-/// ロジスティックモデル
-/// m(t) = a / (1 + exp(-b*(t-c)))
+/// 変曲S字型モデル（Ohba 1984）
+/// m(t) = a(1 - e^(-bt)) / (1 + ψ·e^(-bt))
 /// </summary>
-public class LogisticModel : ReliabilityGrowthModelBase
+/// <remarks>
+/// <para>
+/// Ohba (1984) の変曲S字型（inflection S-shaped）NHPP モデル。
+/// ψ は変曲の度合いを表す形状パラメータ（ψ = (1-r)/r、r は検出可能な欠陥の割合）で、
+/// ψ = 0 で指数型（Goel-Okumoto）に一致し、ψ が大きいほど立ち上がりの遅い S 字になる。
+/// </para>
+/// <para>
+/// ロジスティック曲線 L(t) = 1/(1+e^(-b(t-c))) を t ≥ 0 に切断・正規化した (L(t)-L(0))/(1-L(0)) は、
+/// ψ = e^(bc) とおくとこの式と恒等的に等しい。つまり変曲S字型は m(0)=0 のロジスティック曲線であり、
+/// 変曲点は t* = ln(ψ)/b（ψ &gt; 1 のとき）。そのため別途ロジスティックモデルは設けない。
+/// </para>
+/// <para>
+/// m(∞) = a（ψ に依存しない）。
+/// 以前は「Pham型不完全デバッグ指数」と表記し ψ を「不完全デバッグ率 p」と解釈していたが、
+/// この式は新規バグの混入を表すものではない。
+/// </para>
+/// <para>
+/// 参照: Ohba, M. (1984). "Inflection S-shaped software reliability growth model."
+/// Stochastic Models in Reliability Theory, Lecture Notes in Economics and Mathematical Systems 235, 144-162.
+/// </para>
+/// </remarks>
+public class InflectionSModel : ReliabilityGrowthModelBase
 {
-    public override string Name => "ロジスティック";
+    public override string Name => "変曲S字型（Ohba）";
     public override string Category => "基本";
-    public override string Formula => "m(t) = a / (1 + e^(-b(t-c)))";
-    public override string Description => "対称S字カーブ";
-    public override string[] ParameterNames => new[] { "a", "b", "c" };
+    public override string Formula => "m(t) = a(1-e^(-bt)) / (1+ψ·e^(-bt))";
+    public override string Description => "Ohba (1984) の変曲S字型。ψ=0 で指数型、ψ が大きいほど立ち上がりが遅い";
+    public override string[] ParameterNames => new[] { "a", "b", "ψ" };
 
     public override double Calculate(double t, double[] parameters)
     {
         double a = parameters[0];
         double b = parameters[1];
-        double c = parameters[2];
-        return a / (1 + Math.Exp(-b * (t - c)));
+        double psi = parameters[2];
+        
+        double expBt = Math.Exp(-b * t);
+        return a * (1 - expBt) / (1 + psi * expBt);
     }
 
     public override double[] GetInitialParameters(double[] tData, double[] yData)
@@ -363,37 +293,30 @@ public class LogisticModel : ReliabilityGrowthModelBase
         double maxY = yData.Max();
         int n = tData.Length;
 
-        // a: 設定から収束しきい値とスケール係数を取得
         double last = yData[^1];
         double prev = n > 1 ? yData[^2] : yData[^1];
         double increment = last - prev;
         bool isConverged = increment <= GetConvergenceThreshold();
-        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.0);  // ロジスティックは低めのスケール
+        double a0 = maxY * GetScaleFactorAInRange(isConverged, 0.3);
 
-        // c: 累積比率到達日を変曲点候補に（設定から比率を取得）
-        double day50 = FindDayForCumulativeRatio(yData, GetChangePointRatio());
-        double c0 = day50;
-
-        // b: 立ち上がりの鋭さ。平均増分で調整
+        // b: 設定から指数型の値を取得
         double avgSlope = EstimateAverageSlope(yData);
-        double b0 = avgSlope switch
-        {
-            <= 0.1 => 0.1,
-            <= 0.5 => 0.3,
-            <= 1.0 => 0.6,
-            _ => 1.0
-        };
+        double b0 = GetBValueExponential(avgSlope);
 
-        return new[] { a0, b0, c0 };
+        // ψ: 中程度の S 字から開始
+        double psi0 = 1.0;
+
+        return new[] { a0, b0, psi0 };
     }
 
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        int n = tData.Length;
+        // ψ ≥ 0（ψ = 0 で指数型）。変曲点 t* = ln(ψ)/b なので、上限 1000 は t* ≈ 6.9/b に相当し
+        // 切断ロジスティックとして表せる範囲（変曲点が観測期間の後半〜期間外）も含む
         return (
-            new[] { maxY, 0.01, 1.0 },
-            new[] { maxY * 5, 2.0, n * 2.0 }
+            new[] { maxY, 0.001, 0.0 },
+            new[] { maxY * 5, 1.0, 1000.0 }
         );
     }
 }

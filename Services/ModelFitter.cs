@@ -252,13 +252,9 @@ public class ModelFitter
     /// <summary>
     /// 全モデルでフィッティングを実行
     /// </summary>
-    public List<FittingResult> FitAllModels(bool includeImperfectDebug = true)
+    public List<FittingResult> FitAllModels()
     {
-        var models = includeImperfectDebug 
-            ? ModelFactory.GetAllModels() 
-            : ModelFactory.GetBasicModels();
-        
-        return FitModels(models);
+        return FitModels(ModelFactory.GetAllModels());
     }
     
     /// <summary>

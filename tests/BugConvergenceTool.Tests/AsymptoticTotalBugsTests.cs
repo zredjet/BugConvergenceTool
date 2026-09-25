@@ -55,18 +55,13 @@ public class AsymptoticTotalBugsTests
 
         var exp = new TEFExponentialModel(tef);
         var delayed = new TEFDelayedSModel(tef);
-        var imperfect = new TEFImperfectDebugModel(tef);
-        foreach (var m in new ReliabilityGrowthModelBase[] { exp, delayed, imperfect })
+        foreach (var m in new ReliabilityGrowthModelBase[] { exp, delayed })
             TestHelpers.PrepareModel(m, data);
 
-        // exp/遅延S字: パラメータは a, b, TEF_a, TEF_b
+        // パラメータは a, b, TEF_a, TEF_b。W(∞)=∞ なので m(∞)=a
         var p4 = new[] { 120.0, 0.02, 5.0, 1.0 };
         Assert.Equal(120.0, exp.GetAsymptoticTotalBugs(p4), 9);
         Assert.Equal(120.0, delayed.GetAsymptoticTotalBugs(p4), 9);
-
-        // 不完全デバッグ: パラメータは a, b, α, TEF_a, TEF_b → m(∞) = a/(1-α)
-        var p5 = new[] { 120.0, 0.02, 0.2, 5.0, 1.0 };
-        Assert.Equal(120.0 / 0.8, imperfect.GetAsymptoticTotalBugs(p5), 9);
     }
 
     [Fact]
@@ -78,42 +73,19 @@ public class AsymptoticTotalBugsTests
         Assert.Equal(total, covered);
     }
 
-    [Fact]
-    public void ChangePointAsymptote_CountsOnlyDetectedPartOfFirstPopulation()
-    {
-        // a₁=100, b₁=0.01, τ=10 → m₁(τ) = 100(1-e^(-0.1)) ≈ 9.516, m(∞) = 9.516 + a₂
-        var model = new ExponentialChangePointModel();
-        var p = new[] { 100.0, 0.01, 50.0, 0.1, 10.0 };
-        double expected = 100 * (1 - Math.Exp(-0.1)) + 50;
-        Assert.Equal(expected, model.GetAsymptoticTotalBugs(p), 9);
-    }
-
-    [Fact]
-    public void IntegratedFRE_WithEqualRates_MatchesNoChangePointSolution()
-    {
-        // b₁ = b₂ なら変化点は無意味で、m(t) = a(1-e^(-b(1-α)t))/(1-α) に一致するはず
-        var model = new IntegratedFREModel();
-        double a = 100, b = 0.05, eta = 0.9, alpha = 0.2, tau = 12;
-        var p = new[] { a, b, b, eta, alpha, tau };
-
-        foreach (double t in new[] { 1.0, 5.0, 12.0, 20.0, 40.0, 100.0 })
-        {
-            double expected = a * (1 - Math.Exp(-b * (1 - alpha) * t)) / (1 - alpha);
-            Assert.Equal(expected, model.Calculate(t, p), 9);
-        }
-    }
-
     [Theory]
     [InlineData(typeof(ExponentialChangePointModel))]
     [InlineData(typeof(DelayedSChangePointModel))]
-    [InlineData(typeof(ErrorGenerationModel))]
-    [InlineData(typeof(ModifiedGompertzModel))]
-    [InlineData(typeof(GeneralizedImperfectDebugModel))]
+    [InlineData(typeof(FREChangePointModel))]
+    [InlineData(typeof(GompertzModel))]
+    [InlineData(typeof(TEFExponentialModel))]
     public void ModelFitter_SetsEstimatedTotalBugsFromAsymptote(Type modelType)
     {
         // パラメータ名が a₁ / a₀ のモデルでも 0 にならず、m(∞) と一致すること
         var data = TestHelpers.CreateGoelOkumotoData();
-        var model = (ReliabilityGrowthModelBase)Activator.CreateInstance(modelType)!;
+        var model = modelType == typeof(TEFExponentialModel)
+            ? new TEFExponentialModel(new WeibullTEF())
+            : (ReliabilityGrowthModelBase)Activator.CreateInstance(modelType)!;
         var fitter = new ModelFitter(data, OptimizerType.DifferentialEvolution);
 
         var result = fitter.FitModel(model);

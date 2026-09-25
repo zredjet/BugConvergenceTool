@@ -157,19 +157,7 @@ public class ReportGenerator
         sb.AppendLine("  パラメータ推定結果:");
         foreach (var (name, value) in bestResult.Parameters)
         {
-            string desc = name switch
-            {
-                "a" => "（規模パラメータ。潜在バグ総数は m(∞)）",
-                "b" => "（バグ発見率）",
-                "c" => "（形状パラメータ）",
-                "p" => "（不完全デバッグ率）",
-                _ => ""
-            };
-            
-            if (name == "p")
-                sb.AppendLine($"    {name} = {value:F4} ({value * 100:F1}%) {desc}");
-            else
-                sb.AppendLine($"    {name} = {value:F4} {desc}");
+            sb.AppendLine($"    {ParameterDescriptions.FormatLine(name, value)}");
         }
         sb.AppendLine();
         sb.AppendLine("  適合度指標:");
@@ -288,16 +276,6 @@ public class ReportGenerator
                 }
                 sb.AppendLine();
             }
-        }
-        
-        // 不完全デバッグに関する注意
-        if (bestResult.ImperfectDebugRate.HasValue && bestResult.ImperfectDebugRate.Value > 0.1)
-        {
-            sb.AppendLine("  ⚠ 注意:");
-            sb.AppendLine($"    不完全デバッグ率が {bestResult.ImperfectDebugRate.Value * 100:F1}% と高めです。");
-            sb.AppendLine("    バグ修正時に新たなバグが混入している可能性があります。");
-            sb.AppendLine("    修正プロセスやコードレビューの強化を検討してください。");
-            sb.AppendLine();
         }
         
         // ホールドアウト検証結果（--holdout-days 指定時）
