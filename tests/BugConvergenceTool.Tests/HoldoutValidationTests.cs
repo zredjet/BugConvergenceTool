@@ -51,6 +51,55 @@ public class HoldoutValidationTests
             $"訓練区間のみの推定なら大きく過小予測になるはず（実際: {result.HoldoutIncrementErrorPercent:F1}%）");
         Assert.NotNull(result.HoldoutTrainParameters);
         Assert.NotEqual(result.HoldoutTrainParameters![0], result.ParameterVector[0], 1);
+        // 急増は予測区間の外として警告する
+        Assert.True(result.Holdout.IsOutsidePredictionInterval);
+        Assert.Contains(WarningService.GenerateHoldoutWarnings(result, new[] { result }), w => w.Contains("予測区間") && w.Contains("過小"));
+    }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(10)]
+    public void CorrectModel_RarelyWarns(int holdoutDays)
+    {
+        // 以前は相対誤差 30%・60% のしきい値で警告しており、正しいモデル（GO データに GO）でも
+        // Poisson 変動だけで末尾 5 日の 60%・末尾 10 日の 41% に警告が出ていた
+        int warned = 0, total = 0;
+        for (int seed = 0; seed < 200; seed++)
+        {
+            var data = TestHelpers.SimulateData(new ExponentialModel(), new[] { 150.0, 0.05 }, 40, 1000 + seed);
+            var result = new ModelFitter(data, OptimizerType.NelderMead, holdoutDays: holdoutDays, seed: seed).FitModel(new ExponentialModel());
+            if (result.Holdout == null) continue;
+            total++;
+            if (WarningService.GenerateHoldoutWarnings(result, new[] { result }).Count > 0) warned++;
+        }
+        Assert.True(total >= 190);
+        Assert.True(warned <= total * 0.10, $"警告 {warned}/{total}");
+    }
+
+    [Fact]
+    public void WrongModel_IsOftenOutsidePredictionInterval()
+    {
+        // 遅延S字型のデータに GO を当てはめると、末尾 10 日の発見数を大きく外す
+        int outside = 0;
+        for (int seed = 0; seed < 50; seed++)
+        {
+            var data = TestHelpers.SimulateData(new DelayedSModel(), new[] { 150.0, 0.1 }, 40, 1000 + seed);
+            var result = new ModelFitter(data, OptimizerType.NelderMead, holdoutDays: 10, seed: seed).FitModel(new ExponentialModel());
+            if (result.Holdout?.IsOutsidePredictionInterval == true) outside++;
+        }
+        Assert.True(outside >= 25, $"区間外 {outside}/50");
+    }
+
+    [Fact]
+    public void PredictiveInterval_WidensWithParameterUncertainty()
+    {
+        var (poissonLower, poissonUpper, _) = ValidationUtility.PredictiveInterval(20, 0, 20);
+        var (mixedLower, mixedUpper, tail) = ValidationUtility.PredictiveInterval(20, 0.3, 20);
+        Assert.InRange(poissonLower, 11, 13);   // Poisson(20) の 2.5% 点 = 12
+        Assert.InRange(poissonUpper, 28, 30);   // 97.5% 点 = 29
+        Assert.True(mixedLower < poissonLower && mixedUpper > poissonUpper);
+        Assert.True(tail > 0.5);
+        Assert.True(ValidationUtility.PredictiveInterval(20, 0, 40).TailProbability < 0.01);
     }
 
     [Fact]

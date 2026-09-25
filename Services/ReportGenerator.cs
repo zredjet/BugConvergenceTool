@@ -174,6 +174,10 @@ public class ReportGenerator
         {
             sb.AppendLine($"    {ParameterDescriptions.FormatLine(name, value)}");
         }
+        foreach (var line in ParameterDescriptions.DerivedLines(bestResult.Model, bestResult.ParameterVector))
+        {
+            sb.AppendLine($"    {line}");
+        }
         sb.AppendLine();
         sb.AppendLine("  適合度指標:");
         sb.AppendLine($"    決定係数 (R²):       {bestResult.R2:F4}");
@@ -184,10 +188,12 @@ public class ReportGenerator
         sb.AppendLine();
         
         // 推定結果
-        var assessment = ConvergenceAssessment.Evaluate(cumulativeFound.Last(), bestResult.EstimatedTotalBugs);
+        var assessment = ConvergenceAssessment.Evaluate(cumulativeFound.Last(), bestResult);
         sb.AppendLine("  推定結果:");
-        sb.AppendLine($"    推定潜在バグ総数:   {bestResult.EstimatedTotalBugs:F1} 件");
-        sb.AppendLine($"    現在の発見率:       {ConvergenceAssessment.FormatRatio(assessment.Ratio)}");
+        sb.AppendLine($"    {bestResult.Model?.TotalBugsLabel ?? "推定潜在バグ総数"}:   {bestResult.EstimatedTotalBugs:F1} 件");
+        sb.AppendLine($"    現在の発見率:       {ConvergenceAssessment.FormatRatio(assessment.Ratio)}（点推定）");
+        if (assessment.ConservativeRatio.HasValue)
+            sb.AppendLine($"                        {ConvergenceAssessment.FormatRatio(assessment.ConservativeRatio)}（信頼下限）");
         sb.AppendLine($"    残り推定バグ数:     {bestResult.EstimatedTotalBugs - cumulativeFound.Last():F1} 件");
         sb.AppendLine();
         
@@ -219,6 +225,10 @@ public class ReportGenerator
         
         sb.AppendLine("  収束状況の評価:");
         sb.AppendLine($"    {assessment.Stars} {assessment.Message}");
+        if (assessment.Basis != null)
+        {
+            sb.AppendLine($"    判定の根拠: {assessment.Basis}");
+        }
         if (assessment.Note != null)
         {
             sb.AppendLine($"    注意: {assessment.Note}");
@@ -320,7 +330,7 @@ public class ReportGenerator
             if (band.Succeeded > 0)
             {
                 if (band.TotalBugs != null)
-                    sb.AppendLine($"  推定潜在バグ総数:   {band.TotalBugs.Estimate:F1} 件  [{band.TotalBugs.Lower:F1}, {band.TotalBugs.Upper:F1}]");
+                    sb.AppendLine($"  {IntervalFormatter.EstimateLine(bestResult.Model!.TotalBugsLabel, band.TotalBugs)}");
                 AppendMilestones(sb, band.Milestones);
                 sb.AppendLine("  ※ パラメータ推定の不確実性のみ。m(t) の区間はグラフ（reliability_growth.png）に描画しています。");
             }
@@ -341,7 +351,7 @@ public class ReportGenerator
             var total = bestResult.TotalBugsFisherInterval;
             if (total != null && total.IsValid)
             {
-                sb.AppendLine($"  {IntervalFormatter.FisherTotalBugsLine(total)}");
+                sb.AppendLine($"  {IntervalFormatter.FisherTotalBugsLine(total, bestResult.Model!.TotalBugsLabel)}");
             }
             sb.AppendLine("  ※ 漸近近似。パラメータが探索範囲の境界にある場合やデータが少ない場合は不正確です。");
             sb.AppendLine();
@@ -362,9 +372,9 @@ public class ReportGenerator
                 // 総数・収束日の区間は信頼区間と同じ値なので、信頼区間を出力済みなら省略する
                 bool shownInBand = band?.Succeeded > 0;
                 if (pi.TotalBugs != null && !shownInBand)
-                    sb.AppendLine($"  推定潜在バグ総数:   {pi.TotalBugs.Estimate:F1} 件  [{pi.TotalBugs.Lower:F1}, {pi.TotalBugs.Upper:F1}]（信頼区間）");
+                    sb.AppendLine($"  {IntervalFormatter.EstimateLine(bestResult.Model!.TotalBugsLabel, pi.TotalBugs, suffix: "（信頼区間）")}");
                 if (pi.RemainingBugs != null)
-                    sb.AppendLine($"  今後発見される件数: {pi.RemainingBugs.Estimate:F1} 件  [{pi.RemainingBugs.Lower:F0}, {pi.RemainingBugs.Upper:F0}]（予測区間）");
+                    sb.AppendLine($"  {IntervalFormatter.EstimateLine("今後発見される件数", pi.RemainingBugs, "F0", "（予測区間）")}");
                 if (!shownInBand)
                     AppendMilestones(sb, pi.Milestones);
                 sb.AppendLine();
@@ -373,7 +383,7 @@ public class ReportGenerator
                 for (int d = 0; d < pi.FutureTimes.Length; d++)
                 {
                     string date = _testData.DateForDay(pi.FutureTimes[d])?.ToString("yyyy/MM/dd") ?? "-";
-                    sb.AppendLine($"    {pi.FutureTimes[d],6:F0} {date,12} {pi.PointForecast[d],8:F1} {pi.Lower[d],8:F0} {pi.Upper[d],8:F0}");
+                    sb.AppendLine($"    {pi.FutureTimes[d],6:F0} {date,12} {pi.PointForecast[d],8:F1} {pi.Lower[d],8:F0} {IntervalFormatter.Upper(pi.Upper[d], pi.UpperIsBoundLimited.ElementAtOrDefault(d), "F0"),8}");
                 }
             }
             sb.AppendLine();
@@ -405,17 +415,20 @@ public class ReportGenerator
         sb.AppendLine($"  末尾 {resultsWithHoldout[0].Holdout!.TestCount} 日を除いた訓練区間でパラメータを推定し直し、末尾期間の発見数を予測して評価しています。");
         sb.AppendLine("  （他のセクションの結果は全データで推定した最終結果です）");
         sb.AppendLine();
-        sb.AppendLine($"{PadRightByWidth("モデル名", 28)} {PadLeftByWidth("予測発見数", 12)} {PadLeftByWidth("実測発見数", 12)} {PadLeftByWidth("誤差(%)", 10)} {PadLeftByWidth("日次MAE", 10)} {PadLeftByWidth("日次RMSE", 10)}");
-        sb.AppendLine(new string('-', 88));
+        sb.AppendLine($"{PadRightByWidth("モデル名", 28)} {PadLeftByWidth("予測発見数", 12)} {PadLeftByWidth("95%予測区間", 14)} {PadLeftByWidth("実測発見数", 12)} {PadLeftByWidth("判定", 6)} {PadLeftByWidth("誤差(%)", 10)} {PadLeftByWidth("日次MAE", 10)} {PadLeftByWidth("日次RMSE", 10)}");
+        sb.AppendLine(new string('-', 110));
         
         foreach (var result in resultsWithHoldout.OrderBy(r => r.HoldoutAbsIncrementErrorPercent ?? double.MaxValue))
         {
             var h = result.Holdout!;
             string errStr = result.HoldoutIncrementErrorPercent.HasValue ? $"{result.HoldoutIncrementErrorPercent:+0.0;-0.0}" : "-";
-            sb.AppendLine($"{PadRightByWidth(result.ModelName, 28)} {h.PredictedIncrement,12:F1} {h.ActualIncrement,12:F0} {errStr,10} {h.DailyMae,10:F2} {h.DailyRmse,10:F2}");
+            string range = double.IsFinite(h.PredictionLower) ? $"[{h.PredictionLower:F0}, {h.PredictionUpper:F0}]" : "-";
+            string verdict = h.IsOutsidePredictionInterval ? "区間外" : "区間内";
+            sb.AppendLine($"{PadRightByWidth(result.ModelName, 28)} {h.PredictedIncrement,12:F1} {range,14} {h.ActualIncrement,12:F0} {PadLeftByWidth(verdict, 6)} {errStr,10} {h.DailyMae,10:F2} {h.DailyRmse,10:F2}");
         }
         sb.AppendLine();
-        sb.AppendLine("  * 誤差 = (予測発見数 - 実測発見数) / 実測発見数。正は過大予測、負は過小予測");
+        sb.AppendLine("  * 予測区間 = Poisson 変動と訓練区間の推定の不確実性（Fisher 情報行列）を含む区間。区間外なら予測が外れていると判定");
+        sb.AppendLine("  * 誤差 = (予測発見数 - 実測発見数) / 実測発見数。正は過大予測、負は過小予測（件数が少ないと大きくなりやすいので参考）");
         sb.AppendLine("  * 日次MAE/RMSE = 日次発見数の予測誤差（件/日）");
         sb.AppendLine();
     }

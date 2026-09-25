@@ -36,6 +36,21 @@ public class FittingResult
     /// Fisher 情報行列（デルタ法）による推定潜在バグ総数の信頼区間
     /// </summary>
     public Services.DerivedQuantityInterval? TotalBugsFisherInterval { get; set; }
+
+    /// <summary>
+    /// 規模パラメータ a が探索範囲の上限に張り付いているか（総数を推定できていない）
+    /// </summary>
+    public bool ScaleAtUpperBound { get; set; }
+
+    /// <summary>
+    /// 今後発見される件数の予測区間（★ の判定に使う。パラメータの不確実性と Poisson 変動を含む）
+    /// </summary>
+    public Services.IntervalEstimate? RemainingBugsInterval { get; set; }
+
+    /// <summary>
+    /// <see cref="RemainingBugsInterval"/> の求め方（表示用）
+    /// </summary>
+    public string? RemainingBugsIntervalSource { get; set; }
     
     /// <summary>
     /// パラメトリック・ブートストラップによる予測区間（--pi の場合）
@@ -235,6 +250,57 @@ public abstract class ReliabilityGrowthModelBase
         // 基本モデルの多くは parameters[0] (a) が総欠陥数
         return parameters[0];
     }
+
+    /// <summary>
+    /// 発見数の平均値関数 m(t)（<see cref="Calculate"/>）に効くパラメータの数
+    /// </summary>
+    /// <remarks>
+    /// 発見数だけを使う検定（χ² 適合度検定など）の自由度に使う。FRE モデルの η・D などの修正数にしか効かない
+    /// パラメータは含めない。
+    /// </remarks>
+    public virtual int DetectionParameterCount => ParameterNames.Length;
+
+    /// <summary>
+    /// m(∞)（<see cref="GetAsymptoticTotalBugs"/>）の表示名
+    /// </summary>
+    public virtual string TotalBugsLabel => "推定潜在バグ総数";
+
+    /// <summary>
+    /// パラメータ index の境界 bound が、別のモデルに一致するなどの「自然な境界」か
+    /// </summary>
+    /// <remarks>
+    /// 自然な境界に張り付いた推定値は、データがそのモデルを支持しているだけなので注意しない。
+    /// 既定は 0 の境界（変化の大きさが 0 など）と、欠陥除去効率 η の上限 1（完全除去）。
+    /// </remarks>
+    /// <param name="index">パラメータの位置</param>
+    /// <param name="upper">上限なら true、下限なら false</param>
+    /// <param name="bound">境界の値</param>
+    public virtual bool IsNaturalBound(int index, bool upper, double bound)
+    {
+        string name = index < ParameterNames.Length ? ParameterNames[index] : "";
+        return bound == 0 || (upper && name.StartsWith("η") && bound == 1.0);
+    }
+
+    /// <summary>
+    /// Fisher 情報行列を計算する座標に変換する（既定は恒等変換）
+    /// </summary>
+    /// <remarks>
+    /// 探索しやすさのために対数などで持っているパラメータは、自然な境界の近くで尤度がほとんど平らになり
+    /// （例: ln ψ → -∞ で ψ → 0）、その座標のヘッセ行列は特異に近くなる。その場合は元の座標
+    /// （ψ）で Fisher 情報行列を求め、ヤコビアンで推定に使う座標の共分散に戻す。
+    /// </remarks>
+    public virtual double[] ToFisherScale(double[] parameters) => (double[])parameters.Clone();
+
+    /// <summary>
+    /// <see cref="ToFisherScale"/> の逆変換
+    /// </summary>
+    public virtual double[] FromFisherScale(double[] fisherParameters) => (double[])fisherParameters.Clone();
+
+    /// <summary>
+    /// パラメータから導かれる、解釈しやすい量（変曲点など）
+    /// </summary>
+    public virtual IEnumerable<(string Name, double Value, string Description)> GetDerivedQuantities(double[] parameters)
+        => Enumerable.Empty<(string, double, string)>();
 
     #region 共通ヘルパ（初期値推定用）
 

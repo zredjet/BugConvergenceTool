@@ -26,16 +26,6 @@ public static class WarningService
         /// 少ないバグ総数
         /// </summary>
         public const int FewTotalBugs = 20;
-        
-        /// <summary>
-        /// ホールドアウト期間の発見数の相対誤差（絶対値、%）が高い（予測精度低下の警告）
-        /// </summary>
-        public const double HighHoldoutError = 30.0;
-        
-        /// <summary>
-        /// ホールドアウト期間の発見数の相対誤差（絶対値、%）が非常に高い（信頼性警告）
-        /// </summary>
-        public const double VeryHighHoldoutError = 60.0;
     }
     
     /// <summary>
@@ -82,25 +72,22 @@ public static class WarningService
     {
         var warnings = new List<string>();
         
-        if (!result.HoldoutIncrementErrorPercent.HasValue)
+        // 実測の発見数が予測区間（Poisson 変動 + 推定の不確実性）の外にあるときだけ警告する。
+        // 以前は相対誤差 30%・60% の固定しきい値で判定しており、正しいモデルでも Poisson 変動だけで
+        // 末尾 5 日のホールドアウトの約半数に警告が出ていた
+        var h = result.Holdout;
+        if (h == null || !h.IsOutsidePredictionInterval)
             return warnings;
         
-        double error = result.HoldoutIncrementErrorPercent.Value;
-        double absError = Math.Abs(error);
-        string direction = error > 0 ? "過大" : "過小";
+        string direction = h.PredictedIncrement > h.ActualIncrement ? "過大" : "過小";
+        string uncertainty = h.IncludesParameterUncertainty ? "" : "（推定の不確実性を計算できなかったため Poisson 変動のみの区間）";
+        warnings.Add($"ホールドアウト検証で、末尾 {h.TestCount} 日の発見数の実測 {h.ActualIncrement:F0} 件が " +
+                     $"{h.PredictionLevel:P0}予測区間 [{h.PredictionLower:F0}, {h.PredictionUpper:F0}]（予測 {h.PredictedIncrement:F1} 件）の外にあり、" +
+                     $"{direction}に予測しています{uncertainty}。このモデルの将来予測は信頼できない可能性があります。");
         
-        if (absError > Thresholds.VeryHighHoldoutError)
-        {
-            warnings.Add($"ホールドアウト検証で末尾期間の発見数を{absError:F1}%{direction}に予測しており、このモデルの将来予測は信頼できない可能性があります。");
-        }
-        else if (absError > Thresholds.HighHoldoutError)
-        {
-            warnings.Add($"ホールドアウト検証で末尾期間の発見数を{absError:F1}%{direction}に予測しており、将来予測の不確実性が高いと考えられます。");
-        }
-        
-        // 他モデルと比較して明らかに悪い
+        // 他モデルと比較して明らかに悪い（自身が予測区間の外にある場合だけ比較する）
         var successfulResults = allResults.Where(r => r.Success && r.HoldoutAbsIncrementErrorPercent.HasValue).ToList();
-        if (successfulResults.Count > 1)
+        if (successfulResults.Count > 1 && result.HoldoutAbsIncrementErrorPercent is double absError)
         {
             double avgError = successfulResults.Average(r => r.HoldoutAbsIncrementErrorPercent!.Value);
             double minError = successfulResults.Min(r => r.HoldoutAbsIncrementErrorPercent!.Value);
@@ -128,8 +115,9 @@ public static class WarningService
         if (successfulResults.Count <= 1)
             return warnings;
         
-        // AICベストだがホールドアウトでは最良でない場合
-        if (selectedResult.HoldoutAbsIncrementErrorPercent.HasValue)
+        // AICベストだがホールドアウトでは最良でない場合（選択したモデル自身が予測区間の外にある場合だけ。
+        // 区間内なら誤差の差は Poisson 変動の範囲で、予測性能の差とはいえない）
+        if (selectedResult.HoldoutAbsIncrementErrorPercent.HasValue && selectedResult.Holdout?.IsOutsidePredictionInterval == true)
         {
             var bestByHoldout = successfulResults
                 .Where(r => r.HoldoutAbsIncrementErrorPercent.HasValue)

@@ -18,6 +18,7 @@ public class ModelFitter
     private readonly LossType _lossType;
     private readonly int _holdoutDays;
     private readonly int _multiStarts;
+    private readonly int? _seed;
 
     // ホールドアウト用のデータ分割結果
     private TimeSeriesSplitResult? _splitResult;
@@ -37,13 +38,18 @@ public class ModelFitter
     /// <param name="lossType">損失関数</param>
     /// <param name="holdoutDays">ホールドアウト検証に使う末尾の日数（0 なら検証しない）</param>
     /// <param name="multiStarts">マルチスタート最適化の開始点数（1 ならマルチスタートしない）</param>
+    /// <param name="seed">
+    /// 最適化手法の乱数シード（null なら毎回異なる）。推定ごとのシードは、このシード・モデル名・データの内容から決まるので、
+    /// ブートストラップなどで並列に推定しても実行順によらず同じ結果になる
+    /// </param>
     public ModelFitter(
         TestData testData,
         OptimizerType optimizerType = OptimizerType.DifferentialEvolution,
         bool verbose = false,
         LossType lossType = LossType.Mle,
         int holdoutDays = 0,
-        int multiStarts = 1)
+        int multiStarts = 1,
+        int? seed = null)
     {
         _testData = testData;
         _tData = testData.GetTimeData();
@@ -59,6 +65,7 @@ public class ModelFitter
         _lossType = lossType;
         _holdoutDays = holdoutDays;
         _multiStarts = Math.Max(1, multiStarts);
+        _seed = seed;
 
         // ホールドアウト検証用のデータ分割
         if (holdoutDays > 0)
@@ -360,7 +367,7 @@ public class ModelFitter
     /// 規模パラメータ a（全モデルで先頭）が上限に張り付いている場合、尤度は a をさらに大きくすると改善する状態で、
     /// 潜在バグ総数はデータから推定できていない（上限の値がそのまま出ているだけ）。
     /// このモデルは推奨の対象から外す。
-    /// その他のパラメータの張り付きは注意として警告する（ψ=0 や η=1 のような自然な境界は除く）。
+    /// その他のパラメータの張り付きは注意として警告する（ln ψ の下限や η=1 のような自然な境界は除く。<see cref="ReliabilityGrowthModelBase.IsNaturalBound"/>）。
     /// </remarks>
     private void CheckParameterBounds(ReliabilityGrowthModelBase model, double[] parameters, FittingResult result)
     {
@@ -379,6 +386,7 @@ public class ModelFitter
 
             if (i == 0 && atUpper)
             {
+                result.ScaleAtUpperBound = true;
                 result.SelectionExclusionReason ??=
                     $"潜在バグ総数の規模 a が探索範囲の上限（{bound:F1}）に張り付いており、総数を推定できていません";
                 result.Warnings.Add(
@@ -394,8 +402,8 @@ public class ModelFitter
                 continue;
             }
 
-            // 自然な境界（ψ = 0 で指数型、η = 1 で完全除去）は注意しない
-            if (bound == 0 || (name.StartsWith("η") && bound == 1.0)) continue;
+            // 自然な境界（ln ψ の下限で指数型、η = 1 で完全除去など）は注意しない
+            if (model.IsNaturalBound(i, atUpper, bound)) continue;
 
             result.Warnings.Add(
                 $"パラメータ {name} が探索範囲の{(atUpper ? "上限" : "下限")}（{bound:G4}）に張り付いています。推定値の解釈に注意してください。");
@@ -426,14 +434,47 @@ public class ModelFitter
             _splitResult.TestValues,
             _splitResult.TrainValues[^1]);
 
+        // 予測区間（Poisson 変動 + 訓練区間の推定の不確実性）で、実測の発見数が予測から外れているかを判定する
+        double logSe = HoldoutLogStandardError(model, trainParameters);
+        var (lower, upper, tail) = ValidationUtility.PredictiveInterval(validation.PredictedIncrement, logSe, validation.ActualIncrement);
+        validation.PredictionLower = lower;
+        validation.PredictionUpper = upper;
+        validation.TailProbability = tail;
+        validation.IncludesParameterUncertainty = double.IsFinite(logSe);
+
         result.Holdout = validation;
         result.HoldoutTrainParameters = trainParameters;
         result.Warnings.AddRange(validation.Warnings);
 
         if (_verbose)
         {
-            Console.WriteLine($"    -> ホールドアウト検証: 期間発見数 予測={validation.PredictedIncrement:F1} 実測={validation.ActualIncrement:F0} " +
+            Console.WriteLine($"    -> ホールドアウト検証: 期間発見数 予測={validation.PredictedIncrement:F1} [{lower:F0}, {upper:F0}] 実測={validation.ActualIncrement:F0} " +
                 $"(誤差 {validation.IncrementErrorPercent:+0.0;-0.0}%), 日次MAE={validation.DailyMae:F2}");
+        }
+    }
+
+    /// <summary>
+    /// ホールドアウト期間の予測発見数 Δ = m(T_end) - m(T_train) の対数の標準誤差
+    /// （訓練区間の Poisson-NHPP 尤度の Fisher 情報行列とデルタ法。変化点 τ は固定。計算できなければ NaN）
+    /// </summary>
+    private double HoldoutLogStandardError(ReliabilityGrowthModelBase model, double[] trainParameters)
+    {
+        var split = _splitResult!;
+        double tTrain = split.TrainTimes[^1], tEnd = split.TestTimes[^1];
+        try
+        {
+            var service = new FisherInformationService();
+            var fisher = service.CalculateNHPPStandardErrors(
+                model, split.TrainTimes, split.TrainValues, trainParameters, FisherInformationService.ChangePointMask(model));
+            if (!fisher.Success || fisher.CovarianceMatrix == null) return double.NaN;
+            var interval = service.CalculateDerivedInterval(
+                p => model.Calculate(tEnd, p) - model.Calculate(tTrain, p), trainParameters, fisher.CovarianceMatrix, logScale: true);
+            // CalculateDerivedInterval の対数スケールの標準誤差は Δ̂·SE[ln Δ] なので戻す
+            return interval.Estimate > 0 ? interval.StandardError / interval.Estimate : double.NaN;
+        }
+        catch
+        {
+            return double.NaN;
         }
     }
 
@@ -568,6 +609,62 @@ public class ModelFitter
     }
 
     /// <summary>
+    /// ★ の判定に使う「今後発見される件数」の予測区間を、ブートストラップの予測区間がなければ Fisher 情報行列で求める
+    /// </summary>
+    /// <remarks>
+    /// 期待値 r̂ = m(∞) - m(T) の対数の標準誤差をデルタ法で求め、Poisson(Λ)・ln Λ ~ N(ln r̂, s²) の混合の区間とする
+    /// （<see cref="ValidationUtility.PredictiveInterval"/>）。
+    /// Fisher 情報行列は発見数のみの Poisson-NHPP 尤度の最尤推定値でのみ有効（FRE・TEF・SSE では求めない）。変化点 τ は固定する。
+    /// 計算は安いので --pi を指定しなくても求める。
+    /// </remarks>
+    public void EnsureRemainingBugsIntervalForAssessment(FittingResult result, double confidenceLevel = 0.95)
+    {
+        if (!result.Success || result.Model == null || result.RemainingBugsInterval != null) return;
+        if (result.LossFunctionUsed != "MLE" || result.ComparisonGroup != ModelComparisonGroup.DetectionOnly) return;
+        try
+        {
+            var model = result.Model;
+            var p = result.ParameterVector;
+            double tEnd = _tData[^1];
+            double Remaining(double[] q) => model.GetAsymptoticTotalBugs(q) - model.Calculate(tEnd, q);
+            double expected = Remaining(p);
+            if (!(expected >= 0) || !double.IsFinite(expected)) return;
+            
+            var service = new FisherInformationService(confidenceLevel);
+            var fisher = service.CalculateNHPPStandardErrors(model, _tData, _yData, p, FisherInformationService.ChangePointMask(model));
+            if (!fisher.Success || fisher.CovarianceMatrix == null) return;
+            var interval = service.CalculateDerivedInterval(Remaining, p, fisher.CovarianceMatrix, logScale: true);
+            double logSe = interval.Estimate > 0 ? interval.StandardError / interval.Estimate : 0;
+            if (!double.IsFinite(logSe)) return;
+            
+            var (lower, upper, _) = ValidationUtility.PredictiveInterval(expected, logSe, 0, confidenceLevel);
+            result.RemainingBugsInterval = new IntervalEstimate(expected, lower, upper, result.ScaleAtUpperBound);
+            result.RemainingBugsIntervalSource = $"Fisher 情報行列による {confidenceLevel:P0}予測区間";
+        }
+        catch
+        {
+            // 区間を計算できなければ点推定で判定する
+        }
+    }
+
+    /// <summary>
+    /// ブートストラップの合成データ（発見数と、TEF モデルでは工数）を受け取り、本推定と同じ手順で推定し直す関数を返す
+    /// </summary>
+    /// <remarks>
+    /// 工数も再生成した場合は、工数を差し替えたモデルの複製で推定する（並列実行中に共有のモデルを書き換えないため）。
+    /// </remarks>
+    public Func<BootstrapSample, double[]?> CreateBootstrapRefitFunction(ReliabilityGrowthModelBase model)
+    {
+        var loss = LossFunctionFactory.GetForModel(_lossType, model, out _, out _);
+        bool useProfileLikelihood = UseProfileLikelihoodForChangePoints;
+        return sample =>
+        {
+            var target = sample.Effort != null && model is TEFBasedModelBase tef ? tef.WithEffortData(sample.Effort) : model;
+            return Estimate(target, _tData, sample.Y, loss, allowParallel: false, useProfileLikelihood)?.Parameters;
+        };
+    }
+
+    /// <summary>
     /// 推定結果
     /// </summary>
     private sealed record EstimationOutcome(
@@ -638,6 +735,7 @@ public class ModelFitter
         // 全モデルで損失関数を使用（FREモデルの場合は発見+修正の同時推定）
         Func<double[], double> objective = p => lossFunction.Evaluate(tData, yData, model, p, _yFixedData);
         bool log = _verbose && allowParallel;
+        int? seed = EstimationSeed(model, tData, yData);
 
         OptimizationResult result;
 
@@ -646,19 +744,20 @@ public class ModelFitter
             if (log)
                 Console.WriteLine($"  [{model.Name}] 全アルゴリズムで最適化中...");
 
-            result = OptimizerFactory.AutoOptimize(objective, lower, upper, initial, log);
+            result = OptimizerFactory.AutoOptimize(objective, lower, upper, initial, log, seed);
         }
         else if (_multiStarts > 1)
         {
             result = OptimizerFactory.MultiStartOptimize(
                 objective, lower, upper, initial,
-                optimizerFactory: () => OptimizerFactory.Create(_optimizerType),
+                optimizerFactory: start => OptimizerFactory.Create(_optimizerType, OptimizerFactory.DeriveSeed(seed, start)),
                 numStarts: _multiStarts,
-                verbose: log);
+                verbose: log,
+                seed: seed);
         }
         else
         {
-            var optimizer = OptimizerFactory.Create(_optimizerType);
+            var optimizer = OptimizerFactory.Create(_optimizerType, seed);
 
             if (log)
                 Console.WriteLine($"  [{model.Name}] {optimizer.Name}で最適化中...");
@@ -674,6 +773,21 @@ public class ModelFitter
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 推定1回分の乱数シード（基準シード・モデル名・データの内容から決定的に作る。基準シードがなければ null）
+    /// </summary>
+    private int? EstimationSeed(ReliabilityGrowthModelBase model, double[] tData, double[] yData)
+    {
+        if (!_seed.HasValue) return null;
+        // string.GetHashCode はプロセスごとに変わるため使わない（FNV-1a）
+        ulong h = 14695981039346656037UL;
+        void Mix(ulong v) { unchecked { h = (h ^ v) * 1099511628211UL; } }
+        foreach (char c in model.Name) Mix(c);
+        foreach (double v in tData) Mix((ulong)BitConverter.DoubleToInt64Bits(v));
+        foreach (double v in yData) Mix((ulong)BitConverter.DoubleToInt64Bits(v));
+        return OptimizerFactory.DeriveSeed(_seed, unchecked((int)(h ^ (h >> 32))));
     }
 
     /// <summary>

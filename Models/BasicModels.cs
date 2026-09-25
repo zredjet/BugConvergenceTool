@@ -247,18 +247,24 @@ public class GeneralizedGoelOkumotoModel : ReliabilityGrowthModelBase
 
 /// <summary>
 /// 変曲S字型モデル（Ohba 1984）
-/// m(t) = a(1 - e^(-bt)) / (1 + ψ·e^(-bt))
+/// m(t) = a(1 - e^(-bt)) / (1 + ψ·e^(-bt))、ψ = e^ℓ
 /// </summary>
 /// <remarks>
 /// <para>
 /// Ohba (1984) の変曲S字型（inflection S-shaped）NHPP モデル。
 /// ψ は変曲の度合いを表す形状パラメータ（ψ = (1-r)/r、r は検出可能な欠陥の割合）で、
-/// ψ = 0 で指数型（Goel-Okumoto）に一致し、ψ が大きいほど立ち上がりの遅い S 字になる。
+/// ψ → 0 で指数型（Goel-Okumoto）に一致し、ψ が大きいほど立ち上がりの遅い S 字になる。
 /// </para>
 /// <para>
 /// ロジスティック曲線 L(t) = 1/(1+e^(-b(t-c))) を t ≥ 0 に切断・正規化した (L(t)-L(0))/(1-L(0)) は、
 /// ψ = e^(bc) とおくとこの式と恒等的に等しい。つまり変曲S字型は m(0)=0 のロジスティック曲線であり、
-/// 変曲点は t* = ln(ψ)/b（ψ &gt; 1 のとき）。そのため別途ロジスティックモデルは設けない。
+/// 変曲点は t* = ln(ψ)/b（ψ &gt; 1 のとき。ロジスティックの c にあたる）。そのため別途ロジスティックモデルは設けない。
+/// </para>
+/// <para>
+/// ψ は ℓ = ln ψ ∈ [-10, 20] で推定する。以前は ψ ∈ [0, 1000] としていたが、急峻で変曲点の遅い S 字では
+/// ψ = e^(b·t*) が数万〜数百万になり、上限に張り付いて総数を過大に推定していた（ψ≈3.6万の合成データで 50/50 回）。
+/// ψ のままでは差分進化が一様に撒く点の大半が大きな ψ に偏るが、ℓ なら小さい ψ から大きい ψ まで均等に探索できる。
+/// ℓ の下限 -10（ψ ≈ 4.5e-5）は実質的に指数型と同じで、自然な境界として張り付きを注意しない。
 /// </para>
 /// <para>
 /// m(∞) = a（ψ に依存しない）。
@@ -272,20 +278,23 @@ public class GeneralizedGoelOkumotoModel : ReliabilityGrowthModelBase
 /// </remarks>
 public class InflectionSModel : ReliabilityGrowthModelBase
 {
+    /// <summary>ln ψ の探索範囲（下限は指数型に一致する自然な境界）</summary>
+    public const double LogPsiLower = -10.0, LogPsiUpper = 20.0;
+
     public override string Name => "変曲S字型（Ohba）";
     public override string Category => "基本";
-    public override string Formula => "m(t) = a(1-e^(-bt)) / (1+ψ·e^(-bt))";
-    public override string Description => "Ohba (1984) の変曲S字型。ψ=0 で指数型、ψ が大きいほど立ち上がりが遅い";
-    public override string[] ParameterNames => new[] { "a", "b", "ψ" };
+    public override string Formula => "m(t) = a(1-e^(-bt)) / (1+ψ·e^(-bt)), ψ = e^(lnψ)";
+    public override string Description => "Ohba (1984) の変曲S字型。ψ→0 で指数型、ψ が大きいほど立ち上がりが遅い";
+    public override string[] ParameterNames => new[] { "a", "b", "lnψ" };
 
     public override double Calculate(double t, double[] parameters)
     {
         double a = parameters[0];
         double b = parameters[1];
-        double psi = parameters[2];
+        double logPsi = parameters[2];
         
-        double expBt = Math.Exp(-b * t);
-        return a * (1 - expBt) / (1 + psi * expBt);
+        // ψ·e^(-bt) = e^(lnψ - bt)（ψ が大きくてもあふれない）
+        return a * (1 - Math.Exp(-b * t)) / (1 + Math.Exp(logPsi - b * t));
     }
 
     public override double[] GetInitialParameters(double[] tData, double[] yData)
@@ -303,20 +312,51 @@ public class InflectionSModel : ReliabilityGrowthModelBase
         double avgSlope = EstimateAverageSlope(yData);
         double b0 = GetBValueExponential(avgSlope);
 
-        // ψ: 中程度の S 字から開始
-        double psi0 = 1.0;
-
-        return new[] { a0, b0, psi0 };
+        // ln ψ = 0（ψ = 1、変曲点 t* = 0）から開始
+        return new[] { a0, b0, 0.0 };
     }
 
     public override (double[] lower, double[] upper) GetBounds(double[] tData, double[] yData)
     {
         double maxY = yData.Max();
-        // ψ ≥ 0（ψ = 0 で指数型）。変曲点 t* = ln(ψ)/b なので、上限 1000 は t* ≈ 6.9/b に相当し
-        // 切断ロジスティックとして表せる範囲（変曲点が観測期間の後半〜期間外）も含む
         return (
-            new[] { maxY, 0.001, 0.0 },
-            new[] { maxY * 5, 1.0, 1000.0 }
+            new[] { maxY, 0.001, LogPsiLower },
+            new[] { maxY * 5, 1.0, LogPsiUpper }
         );
+    }
+
+    public override bool IsNaturalBound(int index, bool upper, double bound)
+        => (index == 2 && !upper) || base.IsNaturalBound(index, upper, bound);
+
+    public override IEnumerable<(string Name, double Value, string Description)> GetDerivedQuantities(double[] parameters)
+        => InflectionPoint(parameters[1], parameters[2]);
+
+    // Fisher 情報行列は ψ で求める（ln ψ が下限付近だと尤度が ln ψ についてほぼ平らでヘッセ行列が特異になる）
+    public override double[] ToFisherScale(double[] parameters) => LogToLinear(parameters, 2);
+    public override double[] FromFisherScale(double[] fisherParameters) => LinearToLog(fisherParameters, 2);
+
+    /// <summary>index の要素を e^x に置き換えた配列</summary>
+    internal static double[] LogToLinear(double[] parameters, int index)
+    {
+        var q = (double[])parameters.Clone();
+        q[index] = Math.Exp(parameters[index]);
+        return q;
+    }
+
+    /// <summary>index の要素を ln x に置き換えた配列（x ≤ 0 は極小値として扱う）</summary>
+    internal static double[] LinearToLog(double[] parameters, int index)
+    {
+        var p = (double[])parameters.Clone();
+        p[index] = Math.Log(Math.Max(parameters[index], 1e-300));
+        return p;
+    }
+
+    /// <summary>
+    /// 変曲点 t* = ln ψ / b（ln ψ &gt; 0 のときだけ。それ以外は観測期間で凹の曲線）
+    /// </summary>
+    internal static IEnumerable<(string Name, double Value, string Description)> InflectionPoint(double b, double logPsi)
+    {
+        if (logPsi > 0 && b > 0)
+            yield return ("t*", logPsi / b, "（変曲点の日。発見数の日次の山。ロジスティックの c にあたる）");
     }
 }

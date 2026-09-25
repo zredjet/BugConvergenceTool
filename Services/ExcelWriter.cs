@@ -125,6 +125,8 @@ public class ExcelWriter
             .Where(p => !shown.Contains(p.Key))
             .Select(p => $"{p.Key}={p.Value:G4}")
             .ToList();
+        if (result.Model != null && result.ParameterVector.Length == result.Model.ParameterNames.Length)
+            others.AddRange(result.Model.GetDerivedQuantities(result.ParameterVector).Select(d => $"{d.Name}={d.Value:G4}"));
         return others.Count > 0 ? string.Join(", ", others) : "-";
     }
     
@@ -178,7 +180,9 @@ public class ExcelWriter
         ws.Cell("B21").Value = bestResult.MSE;
         ws.Cell("B22").Value = bestResult.AIC;
         
-        // 推定結果
+        // 推定結果（有限工数の TEF モデルの m(∞) は「推定総工数で見つかるバグ数」なので見出しも変える）
+        if (bestResult.Model is { } bestModel && bestModel.TotalBugsLabel != new ExponentialModel().TotalBugsLabel)
+            ws.Cell("A25").Value = bestModel.TotalBugsLabel;
         ws.Cell("B25").Value = bestResult.EstimatedTotalBugs;
         ws.Cell("B26").Value = DetectionRateCell(bestResult);
         ws.Cell("B27").Value = bestResult.EstimatedTotalBugs - _testData.CurrentCumulativeBugs;
@@ -192,7 +196,7 @@ public class ExcelWriter
         // ヘッダー（ホールドアウト検証の列を追加）
         var hasHoldout = results.Any(r => r.Holdout != null);
         var headers = hasHoldout 
-            ? new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "HO予測発見数", "HO実測発見数", "HO誤差(%)", "HO日次MAE", "損失関数", "95%発見日", "99%発見日" }
+            ? new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "HO予測発見数", "HO95%予測区間", "HO実測発見数", "HO判定", "HO誤差(%)", "HO日次MAE", "損失関数", "95%発見日", "99%発見日" }
             : new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "95%発見日", "99%発見日" };
         for (int i = 0; i < headers.Length; i++)
         {
@@ -227,7 +231,9 @@ public class ExcelWriter
             {
                 var h = result.Holdout;
                 ws.Cell(row, col++).Value = h != null ? h.PredictedIncrement : "-";
+                ws.Cell(row, col++).Value = h != null && double.IsFinite(h.PredictionLower) ? $"[{h.PredictionLower:F0}, {h.PredictionUpper:F0}]" : "-";
                 ws.Cell(row, col++).Value = h != null ? h.ActualIncrement : "-";
+                ws.Cell(row, col++).Value = h == null ? "-" : h.IsOutsidePredictionInterval ? "区間外" : "区間内";
                 ws.Cell(row, col++).Value = result.HoldoutIncrementErrorPercent.HasValue ? result.HoldoutIncrementErrorPercent.Value : "-";
                 ws.Cell(row, col++).Value = h != null ? h.DailyMae : "-";
                 ws.Cell(row, col++).Value = result.LossFunctionUsed;
@@ -263,9 +269,12 @@ public class ExcelWriter
         ws.Cell(convRow, 1).Value = "収束予測";
         ws.Cell(convRow, 1).Style.Font.Bold = true;
         
+        var assessment = ConvergenceAssessment.Evaluate(_testData.CurrentCumulativeBugs, bestResult);
         ws.Cell(convRow + 1, 1).Value = "現在の発見率";
-        ws.Cell(convRow + 1, 2).Value = ConvergenceAssessment.FormatRatio(
-            ConvergenceAssessment.Evaluate(_testData.CurrentCumulativeBugs, bestResult.EstimatedTotalBugs).Ratio);
+        ws.Cell(convRow + 1, 2).Value = ConvergenceAssessment.FormatRatio(assessment.Ratio) +
+            (assessment.ConservativeRatio.HasValue ? $"（信頼下限 {ConvergenceAssessment.FormatRatio(assessment.ConservativeRatio)}）" : "");
+        ws.Cell(convRow + 2, 1).Value = "収束判断";
+        ws.Cell(convRow + 2, 2).Value = $"{assessment.Stars} {assessment.Basis}";
         
         ws.Cell(convRow + 3, 1).Value = "マイルストーン";
         ws.Cell(convRow + 3, 2).Value = "予測日数";
@@ -310,7 +319,7 @@ public class ExcelWriter
         ws.Cell(1, 1).Value = "日数";
         ws.Cell(1, 2).Value = "実績（累積バグ）";
         ws.Cell(1, 3).Value = "予測値";
-        ws.Cell(1, 4).Value = "潜在バグ総数";
+        ws.Cell(1, 4).Value = bestResult.Model?.TotalBugsLabel.Replace("推定", "") ?? "潜在バグ総数";
         ws.Cell(1, 5).Value = "残存バグ予測";
         
         ws.Range(1, 1, 1, 5).Style.Font.Bold = true;

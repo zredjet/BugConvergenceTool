@@ -27,6 +27,9 @@ public sealed class ConfidenceBandResult
     /// <summary>m(t) の信頼区間の上限</summary>
     public double[] Upper { get; init; } = Array.Empty<double>();
     
+    /// <summary>各時刻の上限が探索範囲の上限（a の張り付き）で決まっているか</summary>
+    public bool[] UpperIsBoundLimited { get; init; } = Array.Empty<bool>();
+    
     /// <summary>推定潜在バグ総数 m(∞) の信頼区間</summary>
     public IntervalEstimate? TotalBugs { get; init; }
     
@@ -78,13 +81,18 @@ public class ConfidenceIntervalService
         }
         
         double qLow = (1 - confidenceLevel) / 2, qHigh = 1 - qLow;
+        bool boundLimited = bootstrap.IsUpperLimitedByBound(qHigh);
+        if (bootstrap.BoundWarning(qHigh) is { } boundWarning) warnings.Add(boundWarning);
         var lower = new double[times.Length];
         var upper = new double[times.Length];
+        var upperLimited = new bool[times.Length];
         for (int i = 0; i < times.Length; i++)
         {
-            var sorted = replicates.Select(p => model.Calculate(times[i], p)).Where(double.IsFinite).OrderBy(v => v).ToList();
+            var values = replicates.Select(p => model.Calculate(times[i], p)).ToList();
+            var sorted = values.Where(double.IsFinite).OrderBy(v => v).ToList();
             lower[i] = ParametricBootstrap.Percentile(sorted, qLow);
             upper[i] = ParametricBootstrap.Percentile(sorted, qHigh);
+            upperLimited[i] = boundLimited && PredictionIntervalService.AnyBoundReplicateInUpperTail(values, bootstrap.AtUpperBound, upper[i]);
         }
         
         var totals = replicates.Select(model.GetAsymptoticTotalBugs).Where(double.IsFinite).OrderBy(v => v).ToList();
@@ -98,10 +106,11 @@ public class ConfidenceIntervalService
             Estimate = times.Select(t => model.Calculate(t, estimate)).ToArray(),
             Lower = lower,
             Upper = upper,
+            UpperIsBoundLimited = upperLimited,
             TotalBugs = new IntervalEstimate(model.GetAsymptoticTotalBugs(estimate),
-                ParametricBootstrap.Percentile(totals, qLow), ParametricBootstrap.Percentile(totals, qHigh)),
+                ParametricBootstrap.Percentile(totals, qLow), ParametricBootstrap.Percentile(totals, qHigh), boundLimited),
             Milestones = PredictionIntervalService.MilestoneRatios
-                .Select(ratio => PredictionIntervalService.CalculateMilestone(model, estimate, replicates, ratio, qLow, qHigh))
+                .Select(ratio => PredictionIntervalService.CalculateMilestone(model, estimate, bootstrap, ratio, qLow, qHigh))
                 .ToList(),
             Warnings = warnings
         };
@@ -199,14 +208,20 @@ public class FisherInformationService
     /// 観測Fisher情報行列を用いた標準誤差計算。
     /// Poisson-NHPP仮定が満たされる場合、SSEベースより正確。
     /// </remarks>
+    /// <param name="fixedParameters">
+    /// 固定して扱う（分散 0 とする）パラメータ。変化点 τ のように尤度が微分できないパラメータに使う
+    /// （τ を固定した条件付きの共分散になるので、τ の不確実性は含まない）。null なら固定しない
+    /// </param>
     public FisherInformationResult CalculateNHPPStandardErrors(
         ReliabilityGrowthModelBase model,
         double[] tData,
         double[] yData,
-        double[] parameters)
+        double[] parameters,
+        bool[]? fixedParameters = null)
     {
         int n = tData.Length;
         int k = parameters.Length;
+        var free = Enumerable.Range(0, k).Where(i => fixedParameters == null || !fixedParameters[i]).ToArray();
         
         var result = new FisherInformationResult
         {
@@ -216,9 +231,15 @@ public class FisherInformationService
         
         try
         {
-            // 負の対数尤度関数（Poisson-NHPP）
-            Func<double[], double> negLogLik = p =>
+            // Fisher 情報行列はモデルが指定する座標 q で求める（ln ψ のように平らになりやすい座標を避ける）
+            var q0 = model.ToFisherScale(parameters);
+            
+            // 負の対数尤度関数（Poisson-NHPP。固定しないパラメータだけの関数）
+            Func<double[], double> negLogLik = qFree =>
             {
+                var q = (double[])q0.Clone();
+                for (int j = 0; j < free.Length; j++) q[free[j]] = qFree[j];
+                var p = model.FromFisherScale(q);
                 double logL = 0;
                 double prevM = 0;
                 
@@ -236,14 +257,22 @@ public class FisherInformationService
                 return -logL; // 負の対数尤度を返す
             };
             
-            // 観測Fisher情報行列（負の対数尤度のヘッセ行列）
-            var observedFisher = CalculateHessian(negLogLik, parameters);
+            // 観測Fisher情報行列（負の対数尤度のヘッセ行列、座標 q の固定しないパラメータ）
+            var observedFisher = CalculateHessian(negLogLik, free.Select(i => q0[i]).ToArray());
             result.ObservedFisherMatrix = observedFisher;
             
-            // 逆行列 = 分散共分散行列
-            var covMatrix = InvertMatrix(observedFisher);
+            // 逆行列 = 分散共分散行列（固定したパラメータの行・列は 0）
+            var covFree = InvertMatrix(observedFisher);
+            double[,]? covQ = null;
+            if (covFree != null)
+            {
+                covQ = new double[k, k];
+                for (int a = 0; a < free.Length; a++)
+                    for (int b = 0; b < free.Length; b++)
+                        covQ[free[a], free[b]] = covFree[a, b];
+            }
             
-            if (covMatrix == null)
+            if (covQ == null)
             {
                 result.Success = false;
                 result.ErrorMessage = "Fisher情報行列が特異または条件数が大きすぎます";
@@ -251,13 +280,16 @@ public class FisherInformationService
                 return result;
             }
             
+            // 推定に使う座標 θ の共分散に戻す: Cov_θ = J Cov_q Jᵀ（J = ∂θ/∂q）
+            var covMatrix = TransformCovariance(covQ, model.FromFisherScale, q0);
+            
             result.CovarianceMatrix = covMatrix;
             
-            // 標準誤差
+            // 標準誤差（固定したパラメータは NaN）
             var se = new double[k];
             for (int i = 0; i < k; i++)
             {
-                se[i] = covMatrix[i, i] > 0 ? Math.Sqrt(covMatrix[i, i]) : double.NaN;
+                se[i] = covMatrix[i, i] > 0 && free.Contains(i) ? Math.Sqrt(covMatrix[i, i]) : double.NaN;
             }
             result.StandardErrors = se;
             
@@ -306,6 +338,12 @@ public class FisherInformationService
         
         return result;
     }
+    
+    /// <summary>
+    /// 変化点 τ（名前が τ で始まるパラメータ）を固定するマスク
+    /// </summary>
+    public static bool[] ChangePointMask(ReliabilityGrowthModelBase model)
+        => model.ParameterNames.Select(name => name.StartsWith("τ")).ToArray();
     
     /// <summary>
     /// パラメータの関数 g(θ) の漸近信頼区間（デルタ法）
@@ -468,6 +506,45 @@ public class FisherInformationService
         }
         
         return grad;
+    }
+    
+    /// <summary>
+    /// 座標 q の共分散を θ = f(q) の共分散に変換する（数値ヤコビアン。恒等変換ならそのまま）
+    /// </summary>
+    private double[,] TransformCovariance(double[,] covQ, Func<double[], double[]> f, double[] q0)
+    {
+        int k = q0.Length;
+        var theta0 = f(q0);
+        var jacobian = new double[k, k];
+        bool identity = true;
+        for (int j = 0; j < k; j++)
+        {
+            double step = Math.Max(_h, Math.Abs(q0[j]) * _h);
+            // 下側が 0 以下になる座標（ψ など）は前進差分にする
+            double lowerStep = q0[j] - step > 0 || q0[j] <= 0 ? step : 0;
+            var qp = (double[])q0.Clone(); qp[j] += step;
+            var qm = (double[])q0.Clone(); qm[j] -= lowerStep;
+            var tp = f(qp);
+            var tm = lowerStep > 0 ? f(qm) : theta0;
+            for (int i = 0; i < k; i++)
+            {
+                jacobian[i, j] = (tp[i] - tm[i]) / (step + lowerStep);
+                if (Math.Abs(jacobian[i, j] - (i == j ? 1.0 : 0.0)) > 1e-6) identity = false;
+            }
+        }
+        if (identity) return covQ;
+        
+        var cov = new double[k, k];
+        for (int a = 0; a < k; a++)
+            for (int b = 0; b < k; b++)
+            {
+                double sum = 0;
+                for (int i = 0; i < k; i++)
+                    for (int j = 0; j < k; j++)
+                        sum += jacobian[a, i] * covQ[i, j] * jacobian[b, j];
+                cov[a, b] = sum;
+            }
+        return cov;
     }
     
     /// <summary>

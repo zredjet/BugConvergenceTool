@@ -78,12 +78,25 @@ public class ModelFormulaTests
     }
 
     [Fact]
-    public void InflectionS_WithZeroPsi_IsGoelOkumoto()
+    public void InflectionS_AtLowerBoundOfLogPsi_IsGoelOkumoto()
     {
+        // ln ψ の下限（ψ ≈ 4.5e-5）は実質的に指数型（差は a·ψ ≈ 0.005 件以下）
         var inflection = new InflectionSModel();
         var go = new ExponentialModel();
         foreach (double t in Times)
-            Assert.Equal(go.Calculate(t, new[] { 120.0, 0.07 }), inflection.Calculate(t, new[] { 120.0, 0.07, 0.0 }), 9);
+            Assert.Equal(go.Calculate(t, new[] { 120.0, 0.07 }), inflection.Calculate(t, new[] { 120.0, 0.07, InflectionSModel.LogPsiLower }), 1e-2);
+    }
+
+    [Fact]
+    public void InflectionS_LogPsi_MatchesPsiFormula()
+    {
+        var inflection = new InflectionSModel();
+        foreach (double psi in new[] { 0.01, 1.0, 400.0, 3.6e4, 1.6e6 })
+            foreach (double t in Times)
+            {
+                double expected = 120 * (1 - Math.Exp(-0.3 * t)) / (1 + psi * Math.Exp(-0.3 * t));
+                Assert.Equal(expected, inflection.Calculate(t, new[] { 120.0, 0.3, Math.Log(psi) }), 9);
+            }
     }
 
     [Fact]
@@ -96,7 +109,7 @@ public class ModelFormulaTests
         foreach (double t in Times)
         {
             double truncatedLogistic = a * (L(t) - L(0)) / (1 - L(0));
-            Assert.Equal(truncatedLogistic, inflection.Calculate(t, new[] { a, b, Math.Exp(b * c) }), 9);
+            Assert.Equal(truncatedLogistic, inflection.Calculate(t, new[] { a, b, b * c }), 9);
         }
     }
 
@@ -106,7 +119,7 @@ public class ModelFormulaTests
         var cp = new InflectionSChangePointModel();
         var inflection = new InflectionSModel();
         foreach (double t in Times)
-            Assert.Equal(inflection.Calculate(t, new[] { 120.0, 0.07, 3.0 }), cp.Calculate(t, new[] { 120.0, 0.07, 0.07, 3.0, 10.0 }), 9);
+            Assert.Equal(inflection.Calculate(t, new[] { 120.0, 0.07, Math.Log(3.0) }), cp.Calculate(t, new[] { 120.0, 0.07, 0.07, Math.Log(3.0), 10.0 }), 9);
     }
 
     [Fact]
@@ -137,7 +150,7 @@ public class ModelFormulaTests
         var fixedModel = new FixedTauChangePointModel(baseModel, 12);
         var p = new[] { 120.0, 0.05, 0.1, 2.0 };
 
-        Assert.Equal(new[] { "a", "b₁", "b₂", "ψ" }, fixedModel.ParameterNames);
+        Assert.Equal(new[] { "a", "b₁", "b₂", "lnψ" }, fixedModel.ParameterNames);
         foreach (double t in Times)
             Assert.Equal(baseModel.Calculate(t, new[] { 120.0, 0.05, 0.1, 2.0, 12.0 }), fixedModel.Calculate(t, p), 12);
         Assert.False(FixedTauChangePointModel.Supports(new MultipleChangePointModel(2)));

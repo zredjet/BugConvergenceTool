@@ -36,6 +36,62 @@ internal static class TestHelpers
     }
 
     /// <summary>
+    /// 累積発見数（と任意で累積修正数・日次工数）から TestData を作る
+    /// </summary>
+    public static TestData FromCumulative(double[] cumulativeFound, double[]? cumulativeFixed = null, double[]? effortDaily = null)
+    {
+        var data = new TestData
+        {
+            ProjectName = "合成データ",
+            TotalTestCases = 800,
+            StartDate = new DateTime(2025, 1, 6)
+        };
+        for (int i = 0; i < cumulativeFound.Length; i++)
+        {
+            data.Dates.Add(data.StartDate.Value.AddDays(i));
+            double effort = effortDaily?[i] ?? 20;
+            data.PlannedDaily.Add(effort);
+            data.ActualDaily.Add(effort);
+            data.BugsFoundDaily.Add(cumulativeFound[i] - (i > 0 ? cumulativeFound[i - 1] : 0));
+            data.BugsFixedDaily.Add(cumulativeFixed == null ? 0 : cumulativeFixed[i] - (i > 0 ? cumulativeFixed[i - 1] : 0));
+        }
+        return data;
+    }
+
+    /// <summary>
+    /// モデルから Poisson 合成データ（累積発見数）を作って TestData にする
+    /// </summary>
+    public static TestData SimulateData(ReliabilityGrowthModelBase model, double[] parameters, int days, int seed)
+    {
+        var t = Enumerable.Range(1, days).Select(d => (double)d).ToArray();
+        return FromCumulative(ParametricBootstrap.SimulateCumulative(model, t, parameters, new Random(seed)));
+    }
+
+    /// <summary>
+    /// バグ単位の発見・修正のシミュレーション（発見は GO、発見したバグの割合 η が平均 meanDelay 日の指数分布で遅れて修正される）
+    /// </summary>
+    public static TestData SimulateDetectionAndCorrection(double a, double b, double eta, double meanDelay, int days, int seed)
+    {
+        var random = new Random(seed);
+        int total = MathNet.Numerics.Distributions.Poisson.Sample(random, a);
+        var found = new double[days];
+        var fixedDaily = new double[days];
+        for (int k = 0; k < total; k++)
+        {
+            double detected = -Math.Log(1 - random.NextDouble()) / b;
+            if (detected > days) continue;
+            found[Math.Max(1, (int)Math.Ceiling(detected)) - 1]++;
+            if (random.NextDouble() >= eta) continue;
+            double corrected = detected + (meanDelay > 0 ? -Math.Log(1 - random.NextDouble()) * meanDelay : 0);
+            if (corrected <= days) fixedDaily[Math.Max(1, (int)Math.Ceiling(corrected)) - 1]++;
+        }
+        double sumFound = 0, sumFixed = 0;
+        var cumulativeFound = found.Select(v => sumFound += v).ToArray();
+        var cumulativeFixed = fixedDaily.Select(v => sumFixed += v).ToArray();
+        return FromCumulative(cumulativeFound, cumulativeFixed);
+    }
+
+    /// <summary>
     /// アセンブリ内の全具象モデルを、コンストラクタ引数のバリエーション込みでインスタンス化する
     /// </summary>
     public static IEnumerable<ReliabilityGrowthModelBase> CreateAllModelInstances()

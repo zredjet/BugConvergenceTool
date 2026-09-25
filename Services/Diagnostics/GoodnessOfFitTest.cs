@@ -51,6 +51,17 @@ public class GoodnessOfFitResult
     /// "漸近分布（パラメータ既知を仮定、保守的）"）
     /// </summary>
     public string EdfPValueMethod { get; init; } = "";
+    
+    /// <summary>
+    /// KS・CvM の p 値をパラメトリック・ブートストラップで較正し、適合性の判定に使ったか
+    /// （false なら漸近 p 値。パラメータを推定しているとほとんど棄却されないため、参考表示にとどめる）
+    /// </summary>
+    public bool EdfPValuesCalibrated { get; init; }
+    
+    /// <summary>
+    /// 適合性を判定できたか（判定に使える検定が1つもなければ false。そのとき <see cref="IsModelAdequate"/> も false）
+    /// </summary>
+    public bool AdequacyDetermined { get; init; }
 }
 
 /// <summary>
@@ -107,10 +118,14 @@ public class GoodnessOfFitTest
             }
         }
         
-        // 自由度 = ビン数 - パラメータ数
+        // 自由度 = ビン数 - 発見数の m(t) に効くパラメータの数
         // 各ビンの件数は独立な Poisson 変数で合計は固定されていない（多項分布ではない）ため、
-        // 合計の制約による -1 は不要（以前は -1 しており、自由度が 1 少なかった）
-        int df = Math.Max(1, binResults.Count - parameters.Length);
+        // 合計の制約による -1 は不要（以前は -1 しており、自由度が 1 少なかった）。
+        // FRE モデルの η・D のように修正数にしか効かないパラメータは数えない。
+        // 自由度が残らなければ検定できない（以前は Max(1, …) で自由度 1 をでっち上げていた）
+        int df = binResults.Count - model.DetectionParameterCount;
+        if (df <= 0)
+            return (chiSquare, df, double.NaN, binResults.Count);
         
         // p値
         double pValue = 1.0 - MathNet.Numerics.Distributions.ChiSquared.CDF(df, chiSquare);
@@ -417,7 +432,8 @@ public class GoodnessOfFitTest
         var (cvm, cvmPValue) = CramerVonMisesTest(model, tData, yData, parameters);
         
         // パラメータ推定の影響を反映した p 値（パラメトリック・ブートストラップ）
-        string edfMethod = "漸近分布（パラメータ既知を仮定。推定している場合は保守的）";
+        string edfMethod = "漸近分布（パラメータ既知を仮定。推定しているとほとんど棄却されないため、判定には使わず参考表示）";
+        bool edfCalibrated = false;
         if (refit != null)
         {
             var bootstrap = BootstrapEdfPValues(model, tData, parameters, ks, cvm, refit, bootstrapIterations, seed);
@@ -425,6 +441,7 @@ public class GoodnessOfFitTest
             {
                 (ksPValue, cvmPValue) = (bootstrap.Value.ksPValue, bootstrap.Value.cvmPValue);
                 edfMethod = $"パラメトリック・ブートストラップ（{bootstrap.Value.valid}回）";
+                edfCalibrated = true;
             }
         }
         
@@ -432,10 +449,19 @@ public class GoodnessOfFitTest
         string chi2Interpretation = InterpretChiSquare(chi2PValue);
         string ksInterpretation = InterpretKs(ksPValue);
         
-        // 総合評価
-        // 複数の検定を組み合わせて判断
-        bool isAdequate = DetermineAdequacy(chi2PValue, ksPValue, cvmPValue);
-        string assessment = GenerateAssessment(chi2PValue, ksPValue, cvmPValue, isAdequate, model.Name);
+        // 総合評価（判定に使える検定だけで決める。較正していない KS・CvM と、自由度のない χ² は使わない）
+        var usable = new List<(string name, double pValue)>();
+        if (double.IsFinite(chi2PValue)) usable.Add(("χ²検定", chi2PValue));
+        if (edfCalibrated)
+        {
+            usable.Add(("KS検定", ksPValue));
+            usable.Add(("CvM検定", cvmPValue));
+        }
+        bool determined = usable.Count > 0;
+        bool isAdequate = determined && DetermineAdequacy(usable.Select(u => u.pValue).ToList());
+        string assessment = determined
+            ? GenerateAssessment(usable, isAdequate, model.Name)
+            : $"モデル「{model.Name}」の適合性は判定できません（χ² 検定の自由度が残らず、KS・CvM の p 値もブートストラップで較正できないため）。";
         
         return new GoodnessOfFitResult
         {
@@ -452,7 +478,9 @@ public class GoodnessOfFitTest
             OverallAssessment = assessment,
             IsModelAdequate = isAdequate,
             SmallSampleWarning = smallSampleWarning,
-            EdfPValueMethod = edfMethod
+            EdfPValueMethod = edfMethod,
+            EdfPValuesCalibrated = edfCalibrated,
+            AdequacyDetermined = determined
         };
     }
 
@@ -503,6 +531,7 @@ public class GoodnessOfFitTest
     {
         return pValue switch
         {
+            double.NaN => "自由度が残らないため検定できません（ビン数 ≤ パラメータ数）",
             >= 0.10 => "モデルはデータに良く適合しています",
             >= 0.05 => "モデルは許容範囲で適合しています",
             >= 0.01 => "適合度に疑問があります（5%水準で棄却）",
@@ -525,67 +554,45 @@ public class GoodnessOfFitTest
     }
 
     /// <summary>
-    /// 総合的な適合判定
+    /// 総合的な適合判定（判定に使う検定の過半数が 5% 水準をパスすれば適合）
     /// </summary>
-    private static bool DetermineAdequacy(double chi2PValue, double ksPValue, double cvmPValue)
+    /// <remarks>
+    /// 3 つとも使えるときは以前と同じく 2 つ以上のパス、χ² だけのときは χ² のパスで判定する。
+    /// </remarks>
+    private static bool DetermineAdequacy(IReadOnlyList<double> pValues)
     {
-        // 厳格な判定: すべての検定が5%水準をパス
-        // 寛容な判定: 2つ以上の検定が5%水準をパス
-        
-        int passCount = 0;
-        if (chi2PValue >= SIGNIFICANCE_LEVEL) passCount++;
-        if (ksPValue >= SIGNIFICANCE_LEVEL) passCount++;
-        if (cvmPValue >= SIGNIFICANCE_LEVEL) passCount++;
-        
-        // 2つ以上パスで適合と判断
-        return passCount >= 2;
+        int passCount = pValues.Count(p => p >= SIGNIFICANCE_LEVEL);
+        return passCount * 2 > pValues.Count;
     }
 
     /// <summary>
     /// 総合評価文を生成
     /// </summary>
     private static string GenerateAssessment(
-        double chi2PValue,
-        double ksPValue,
-        double cvmPValue,
+        IReadOnlyList<(string name, double pValue)> tests,
         bool isAdequate,
         string modelName)
     {
-        var failedTests = new List<string>();
-        var passedTests = new List<string>();
-        
-        if (chi2PValue < SIGNIFICANCE_LEVEL)
-            failedTests.Add($"χ²検定 (p={chi2PValue:F4})");
-        else
-            passedTests.Add("χ²検定");
-        
-        if (ksPValue < SIGNIFICANCE_LEVEL)
-            failedTests.Add($"KS検定 (p={ksPValue:F4})");
-        else
-            passedTests.Add("KS検定");
-        
-        if (cvmPValue < SIGNIFICANCE_LEVEL)
-            failedTests.Add($"CvM検定 (p={cvmPValue:F4})");
-        else
-            passedTests.Add("CvM検定");
+        var failedTests = tests.Where(t => t.pValue < SIGNIFICANCE_LEVEL).Select(t => $"{t.name} (p={t.pValue:F4})").ToList();
+        string basis = tests.Count < 3 ? $"（判定に使った検定: {string.Join("、", tests.Select(t => t.name))}）" : "";
         
         if (isAdequate)
         {
             if (failedTests.Count == 0)
             {
-                return $"モデル「{modelName}」はすべての適合度検定をパスしました。" +
+                return $"モデル「{modelName}」はすべての適合度検定をパスしました{basis}。" +
                        "データに良く適合しており、予測の信頼性は高いと考えられます。";
             }
             else
             {
-                return $"モデル「{modelName}」は概ねデータに適合しています。" +
+                return $"モデル「{modelName}」は概ねデータに適合しています{basis}。" +
                        $"ただし、{string.Join("、", failedTests)} で棄却されました。" +
                        "予測結果は参考にできますが、不確実性に注意してください。";
             }
         }
         else
         {
-            return $"モデル「{modelName}」はデータへの適合度が低いです。" +
+            return $"モデル「{modelName}」はデータへの適合度が低いです{basis}。" +
                    $"棄却された検定: {string.Join("、", failedTests)}。" +
                    "異なるモデルの使用を検討してください。";
         }

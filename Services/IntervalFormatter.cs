@@ -12,7 +12,22 @@ public static class IntervalFormatter
     {
         static string FormatDay(double d) => double.IsPositiveInfinity(d) ? "到達せず" : $"{d:F1}日目";
         string note = milestone.UnreachableFraction > 0 ? $"（{milestone.UnreachableFraction:P0} の反復で到達せず）" : "";
-        return $"{milestone.Ratio * 100:F0}%発見: {FormatDay(milestone.EstimateDay)}  [{FormatDay(milestone.LowerDay)}, {FormatDay(milestone.UpperDay)}]{note}";
+        string upper = (milestone.UpperIsBoundLimited ? "≥" : "") + FormatDay(milestone.UpperDay);
+        return $"{milestone.Ratio * 100:F0}%発見: {FormatDay(milestone.EstimateDay)}  [{FormatDay(milestone.LowerDay)}, {upper}]{note}";
+    }
+    
+    /// <summary>
+    /// 区間の上限（探索範囲で決まっている場合は「≥」を付ける）
+    /// </summary>
+    public static string Upper(double value, bool boundLimited, string format)
+        => (boundLimited ? "≥" : "") + value.ToString(format);
+    
+    /// <summary>
+    /// 総数などの区間（例: "推定潜在バグ総数: 610.2 件  [480.1, ≥1085.0]"）
+    /// </summary>
+    public static string EstimateLine(string label, IntervalEstimate interval, string format = "F1", string suffix = "")
+    {
+        return $"{label}: {interval.Estimate:F1} 件  [{interval.Lower.ToString(format)}, {Upper(interval.Upper, interval.UpperIsBoundLimited, format)}]{suffix}";
     }
     
     /// <summary>
@@ -26,8 +41,8 @@ public static class IntervalFormatter
     /// <summary>
     /// デルタ法による推定潜在バグ総数の信頼区間
     /// </summary>
-    public static string FisherTotalBugsLine(DerivedQuantityInterval total)
+    public static string FisherTotalBugsLine(DerivedQuantityInterval total, string label = "推定潜在バグ総数")
     {
-        return $"推定潜在バグ総数: {total.Estimate:F1} 件  {total.ConfidenceLevel:P0}区間 [{total.Lower:F1}, {total.Upper:F1}]（デルタ法{(total.LogScale ? "・対数スケール" : "")}）";
+        return $"{label}: {total.Estimate:F1} 件  {total.ConfidenceLevel:P0}区間 [{total.Lower:F1}, {total.Upper:F1}]（デルタ法{(total.LogScale ? "・対数スケール" : "")}）";
     }
 }

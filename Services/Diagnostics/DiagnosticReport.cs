@@ -24,6 +24,12 @@ public class DiagnosticReport
     /// </summary>
     public PoissonConsistentAnalysisResult? PoissonDiagnostics { get; init; }
     
+    /// <summary>
+    /// 採点（系統的パターン・外れ値・歪度・尖度）と自己相関検定に使った残差の分析結果
+    /// （ランダム化分位残差。計算できなければ <see cref="ResidualAnalysis"/> と同じ）
+    /// </summary>
+    public ResidualAnalysisResult? ScoringResiduals { get; init; }
+    
     /// <summary>診断の総合評価スコア（0-100）</summary>
     public int OverallScore { get; init; }
     
@@ -99,19 +105,13 @@ public class DiagnosticReportGenerator
         var warnings = new List<string>();
         var recommendations = new List<string>();
         
-        // 1. 残差分析
+        // 1. 残差分析（表示用。指定された種類の残差）
         var residualResult = _residualAnalyzer.Analyze(model, tData, yData, parameters, residualType);
         
         if (!string.IsNullOrEmpty(residualResult.SmallSampleWarning))
             warnings.Add(residualResult.SmallSampleWarning);
         
-        // 2. 自己相関検定
-        var autocorrelationResult = _autocorrelationTest.Test(residualResult.Residuals);
-        
-        if (!string.IsNullOrEmpty(autocorrelationResult.SmallSampleWarning))
-            warnings.Add(autocorrelationResult.SmallSampleWarning);
-        
-        // 3. Poisson 整合性診断（NHPP の仮定: 日次発見数の分散 = 期待値 を検定）
+        // 2. Poisson 整合性診断（NHPP の仮定: 日次発見数の分散 = 期待値 を検定。ランダム化分位残差もここで作る）
         PoissonConsistentAnalysisResult? poissonResult = null;
         try
         {
@@ -123,21 +123,30 @@ public class DiagnosticReportGenerator
             warnings.Add($"Poisson整合性診断に失敗しました: {ex.Message}");
         }
         
-        // 4. 正規性検定
         // 日次発見数は離散（期待値が小さいことが多い）ため、Pearson 残差は正しいモデルでも正規分布に従わず、
-        // 正規性検定が棄却されやすい。モデルが正しければ厳密に標準正規分布に従うランダム化分位残差で検定する
-        var normalityResiduals = poissonResult?.GetResidualsForNormalityTest() is { Length: > 0 } rqr ? rqr : residualResult.Residuals;
-        var normalityResult = _normalityTest.Test(normalityResiduals);
+        // 歪度・尖度・外れ値・ラン検定・自己相関が「問題あり」になりやすい（例: 正しいモデルで |歪度| > 0.5 が 5〜8 割）。
+        // 採点と独立性・正規性の検定は、モデルが正しければ厳密に独立な標準正規分布に従うランダム化分位残差で行う
+        var rqr = poissonResult?.GetResidualsForNormalityTest() is { Length: > 0 } values ? values : null;
+        var scoringResiduals = rqr != null ? _residualAnalyzer.Summarize(rqr, ResidualType.RandomizedQuantile) : residualResult;
+        
+        // 3. 自己相関検定
+        var autocorrelationResult = _autocorrelationTest.Test(scoringResiduals.Residuals);
+        
+        if (!string.IsNullOrEmpty(autocorrelationResult.SmallSampleWarning))
+            warnings.Add(autocorrelationResult.SmallSampleWarning);
+        
+        // 4. 正規性検定
+        var normalityResult = _normalityTest.Test(scoringResiduals.Residuals);
         if (!string.IsNullOrEmpty(normalityResult.SmallSampleWarning))
             warnings.Add(normalityResult.SmallSampleWarning);
         
         // 5. 総合評価を計算
         var (score, grade) = CalculateOverallScore(
-            residualResult, autocorrelationResult, normalityResult);
+            scoringResiduals, autocorrelationResult, normalityResult);
         
         // 6. 推奨事項を生成
         recommendations.AddRange(GenerateRecommendations(
-            residualResult, autocorrelationResult, normalityResult, grade));
+            scoringResiduals, autocorrelationResult, normalityResult, grade));
         
         // 7. 総合評価文を生成
         string assessment = GenerateAssessment(grade, score, model.Name);
@@ -149,6 +158,7 @@ public class DiagnosticReportGenerator
             AutocorrelationTest = autocorrelationResult,
             NormalityTest = normalityResult,
             PoissonDiagnostics = poissonResult,
+            ScoringResiduals = scoringResiduals,
             OverallScore = score,
             OverallGrade = grade,
             OverallAssessment = assessment,
@@ -184,32 +194,22 @@ public class DiagnosticReportGenerator
         else if (outlierRatio > 0.05)
             score -= 8;
         
-        // 歪度と尖度
-        if (Math.Abs(residual.Skewness) > 1.0)
-            score -= 10;
-        else if (Math.Abs(residual.Skewness) > 0.5)
-            score -= 5;
+        // 歪度と尖度（標準正規分布からの標本での標準誤差 √(6/n)・√(24/n) の何倍か。
+        // 固定のしきい値 0.5・1.0 では、n = 40 の正規乱数でも約 2 割が超える）
+        if (n >= 8)
+        {
+            double skewZ = Math.Abs(residual.Skewness) / Math.Sqrt(6.0 / n);
+            double kurtZ = Math.Abs(residual.Kurtosis) / Math.Sqrt(24.0 / n);
+            if (skewZ > 3) score -= 10;
+            else if (skewZ > 2) score -= 5;
+            if (kurtZ > 3) score -= 10;
+            else if (kurtZ > 2) score -= 5;
+        }
         
-        if (Math.Abs(residual.Kurtosis) > 3.0)
-            score -= 10;
-        else if (Math.Abs(residual.Kurtosis) > 1.0)
-            score -= 5;
-        
-        // 自己相関
+        // 自己相関（Ljung-Box 検定で判定）
         if (autocorrelation.HasSignificantAutocorrelation)
         {
-            // Durbin-Watson の程度による
-            double dw = autocorrelation.DurbinWatsonStatistic;
-            if (dw < 1.0 || dw > 3.0)
-                score -= 25;
-            else if (dw < 1.5 || dw > 2.5)
-                score -= 15;
-            
-            // Ljung-Box のp値による
-            if (autocorrelation.LjungBoxPValue < 0.01)
-                score -= 10;
-            else if (autocorrelation.LjungBoxPValue < 0.05)
-                score -= 5;
+            score -= autocorrelation.LjungBoxPValue < 0.01 ? 20 : 10;
         }
         
         // 正規性（NHPPではある程度の逸脱は許容）
@@ -276,17 +276,19 @@ public class DiagnosticReportGenerator
         // 自己相関に対する推奨
         if (autocorrelation.HasSignificantAutocorrelation)
         {
-            if (autocorrelation.DurbinWatsonStatistic < 1.5)
-            {
-                recommendations.Add("正の自己相関が検出されました。" +
-                    "モデルが時間的なトレンドを十分に捉えていない可能性があります。" +
-                    "より複雑なモデル（遅延S字型、変化点モデル等）を検討してください。");
-            }
-            else if (autocorrelation.DurbinWatsonStatistic > 2.5)
+            // 向きは 1 次の自己相関の符号で判断する
+            double lag1 = autocorrelation.AutocorrelationCoefficients.Length > 0 ? autocorrelation.AutocorrelationCoefficients[0] : 0;
+            if (lag1 < 0)
             {
                 recommendations.Add("負の自己相関が検出されました。" +
                     "モデルが過剰適合している可能性があります。" +
                     "よりシンプルなモデルの使用を検討してください。");
+            }
+            else
+            {
+                recommendations.Add("正の自己相関が検出されました。" +
+                    "モデルが時間的なトレンドを十分に捉えていない可能性があります。" +
+                    "より複雑なモデル（遅延S字型、変化点モデル等）を検討してください。");
             }
         }
         
@@ -393,21 +395,42 @@ public class DiagnosticReportGenerator
             sb.AppendLine();
         }
         
+        // 採点に使った残差（ランダム化分位残差）
+        if (report.ScoringResiduals is { } q && !ReferenceEquals(q, report.ResidualAnalysis))
+        {
+            sb.AppendLine("─────────────────────────────────────────────────────────────────");
+            sb.AppendLine("  ランダム化分位残差（採点・自己相関・正規性の検定に使用）");
+            sb.AppendLine("─────────────────────────────────────────────────────────────────");
+            sb.AppendLine("  ※ 日次発見数は離散のため Pearson 残差は正しいモデルでも歪む。採点はモデルが正しければ標準正規分布に従うこの残差で行う");
+            sb.AppendLine($"  歪度: {q.Skewness:F4}");
+            sb.AppendLine($"  尖度: {q.Kurtosis:F4}");
+            sb.AppendLine($"  外れ値（|r| > 3）: {q.OutlierIndices.Length}点");
+            if (q.RunsTest != null)
+            {
+                sb.AppendLine($"  ラン検定: 観測={q.RunsTest.ObservedRuns}, 期待={q.RunsTest.ExpectedRuns:F1}, p={q.RunsTest.PValue:F4}");
+            }
+            if (q.HasSystematicPattern)
+            {
+                sb.AppendLine($"  ⚠ パターン検出: {q.PatternDescription}");
+            }
+            sb.AppendLine();
+        }
+        
         // 自己相関検定
         if (report.AutocorrelationTest != null)
         {
             var a = report.AutocorrelationTest;
             sb.AppendLine("─────────────────────────────────────────────────────────────────");
-            sb.AppendLine("  自己相関検定");
+            sb.AppendLine("  自己相関検定（判定は Ljung-Box 検定。DW・各ラグは参考）");
             sb.AppendLine("─────────────────────────────────────────────────────────────────");
-            sb.AppendLine($"  Durbin-Watson: {a.DurbinWatsonStatistic:F4}");
+            sb.AppendLine($"  Durbin-Watson（参考）: {a.DurbinWatsonStatistic:F4}");
             sb.AppendLine($"    → {a.DurbinWatsonInterpretation}");
             sb.AppendLine($"  Ljung-Box Q: {a.LjungBoxQ:F4} (df={a.LjungBoxDegreesOfFreedom}, p={a.LjungBoxPValue:F4})");
             
             if (a.SignificantLags.Length > 0)
             {
                 string lags = string.Join(", ", a.SignificantLags.Take(5));
-                sb.AppendLine($"  有意なラグ: {lags}");
+                sb.AppendLine($"  ±1.96/√n を超えたラグ（参考。ラグの数だけ偶然に超えやすい）: {lags}");
             }
             
             sb.AppendLine($"  判定: {(a.HasSignificantAutocorrelation ? "⚠ 自己相関あり" : "✓ 自己相関なし")}");

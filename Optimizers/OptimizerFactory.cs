@@ -11,64 +11,85 @@ public static class OptimizerFactory
     /// <summary>
     /// 指定タイプのオプティマイザを作成（設定を使用）
     /// </summary>
-    public static IOptimizer Create(OptimizerType type)
+    /// <param name="type">アルゴリズム</param>
+    /// <param name="seed">乱数シード（null なら毎回異なる。乱数を使わない手法では無視）</param>
+    public static IOptimizer Create(OptimizerType type, int? seed = null)
     {
         var config = ConfigurationService.Current.Optimizers;
         
         return type switch
         {
             OptimizerType.GridSearchGradient => CreateGridSearchGradient(config.GridSearchGradient),
-            OptimizerType.PSO => CreatePSO(config.PSO),
-            OptimizerType.DifferentialEvolution => CreateDE(config.DE),
-            OptimizerType.GWO => CreateGWO(config.GWO),
+            OptimizerType.PSO => CreatePSO(config.PSO, seed),
+            OptimizerType.DifferentialEvolution => CreateDE(config.DE, seed),
+            OptimizerType.GWO => CreateGWO(config.GWO, seed),
             OptimizerType.NelderMead => CreateNelderMead(config.NelderMead),
-            OptimizerType.CMAES => CreateCMAES(config.CMAES),
-            _ => CreateDE(config.DE) // デフォルトはDE
+            OptimizerType.CMAES => CreateCMAES(config.CMAES, seed),
+            _ => CreateDE(config.DE, seed) // デフォルトはDE
         };
     }
     
     /// <summary>
     /// 全オプティマイザを取得（設定を使用）
     /// </summary>
-    public static IEnumerable<IOptimizer> GetAllOptimizers()
+    /// <param name="seed">乱数シード（手法ごとに別の系列に写す）</param>
+    public static IEnumerable<IOptimizer> GetAllOptimizers(int? seed = null)
     {
         var config = ConfigurationService.Current.Optimizers;
         
         yield return CreateGridSearchGradient(config.GridSearchGradient);
-        yield return CreatePSO(config.PSO);
-        yield return CreateDE(config.DE);
-        yield return CreateGWO(config.GWO);
+        yield return CreatePSO(config.PSO, DeriveSeed(seed, 1));
+        yield return CreateDE(config.DE, DeriveSeed(seed, 2));
+        yield return CreateGWO(config.GWO, DeriveSeed(seed, 3));
         yield return CreateNelderMead(config.NelderMead);
-        yield return CreateCMAES(config.CMAES);
+        yield return CreateCMAES(config.CMAES, DeriveSeed(seed, 4));
     }
     
     /// <summary>
     /// メタヒューリスティックオプティマイザのみ取得（設定を使用）
     /// </summary>
-    public static IEnumerable<IOptimizer> GetMetaheuristicOptimizers()
+    public static IEnumerable<IOptimizer> GetMetaheuristicOptimizers(int? seed = null)
     {
         var config = ConfigurationService.Current.Optimizers;
         
-        yield return CreatePSO(config.PSO);
-        yield return CreateDE(config.DE);
-        yield return CreateGWO(config.GWO);
-        yield return CreateCMAES(config.CMAES);
+        yield return CreatePSO(config.PSO, DeriveSeed(seed, 1));
+        yield return CreateDE(config.DE, DeriveSeed(seed, 2));
+        yield return CreateGWO(config.GWO, DeriveSeed(seed, 3));
+        yield return CreateCMAES(config.CMAES, DeriveSeed(seed, 4));
+    }
+    
+    /// <summary>
+    /// 基準シードから、用途ごとに別の系列のシードを決定的に作る（基準が null なら null）
+    /// </summary>
+    public static int? DeriveSeed(int? seed, int stream)
+    {
+        if (!seed.HasValue) return null;
+        unchecked
+        {
+            // SplitMix 風の混合（近いシード同士でも系列が似ないようにする）
+            ulong z = (ulong)(uint)seed.Value * 0x9E3779B97F4A7C15UL + (ulong)(uint)stream * 0xBF58476D1CE4E5B9UL;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+            z ^= z >> 31;
+            return (int)(z & 0x7FFFFFFF);
+        }
     }
     
     #region ファクトリメソッド
     
-    private static DEOptimizer CreateDE(DESettings settings)
+    private static DEOptimizer CreateDE(DESettings settings, int? seed)
     {
         return new DEOptimizer(
             populationSize: settings.PopulationSize,
             maxIterations: settings.MaxIterations,
             F: settings.F,
             CR: settings.CR,
-            tolerance: settings.Tolerance
+            tolerance: settings.Tolerance,
+            seed: seed
         );
     }
     
-    private static PSOOptimizer CreatePSO(PSOSettings settings)
+    private static PSOOptimizer CreatePSO(PSOSettings settings, int? seed)
     {
         return new PSOOptimizer(
             swarmSize: settings.SwarmSize,
@@ -76,25 +97,28 @@ public static class OptimizerFactory
             w: settings.W,
             c1: settings.C1,
             c2: settings.C2,
-            tolerance: settings.Tolerance
+            tolerance: settings.Tolerance,
+            seed: seed
         );
     }
     
-    private static CMAESOptimizer CreateCMAES(CMAESSettings settings)
+    private static CMAESOptimizer CreateCMAES(CMAESSettings settings, int? seed)
     {
         return new CMAESOptimizer(
             maxIterations: settings.MaxIterations,
             tolerance: settings.Tolerance,
-            initialSigmaU: settings.InitialSigmaU
+            initialSigmaU: settings.InitialSigmaU,
+            seed: seed
         );
     }
     
-    private static GWOOptimizer CreateGWO(GWOSettings settings)
+    private static GWOOptimizer CreateGWO(GWOSettings settings, int? seed)
     {
         return new GWOOptimizer(
             packSize: settings.PackSize,
             maxIterations: settings.MaxIterations,
-            tolerance: settings.Tolerance
+            tolerance: settings.Tolerance,
+            seed: seed
         );
     }
     
@@ -130,11 +154,12 @@ public static class OptimizerFactory
         double[] lowerBounds,
         double[] upperBounds,
         double[]? initialGuess = null,
-        bool verbose = false)
+        bool verbose = false,
+        int? seed = null)
     {
         var results = new List<OptimizationResult>();
         
-        foreach (var optimizer in GetAllOptimizers())
+        foreach (var optimizer in GetAllOptimizers(seed))
         {
             var result = optimizer.Optimize(objectiveFunction, lowerBounds, upperBounds, initialGuess);
             results.Add(result);
@@ -174,10 +199,12 @@ public static class OptimizerFactory
     /// <param name="upperBounds">上限</param>
     /// <param name="initialGuess">初期推定値（開始点の1つに含める）</param>
     /// <param name="optimizerFactory">
-    /// 最適化器の生成関数。最適化器は乱数などの内部状態を持つため、開始点ごとに新しいインスタンスを使う
+    /// 最適化器の生成関数（引数は開始点の番号）。最適化器は乱数などの内部状態を持つため、開始点ごとに新しいインスタンスを使う。
+    /// 再現性が必要なら、番号から開始点ごとに別のシードを作って渡すこと
     /// </param>
     /// <param name="numStarts">開始点の数</param>
     /// <param name="verbose">詳細出力</param>
+    /// <param name="seed">開始点の生成に使う乱数シード（null なら毎回異なる）</param>
     /// <remarks>
     /// 戻り値の <see cref="OptimizationResult.StartsConvergedToBest"/> は最良解と同じ目的関数値
     /// （相対差 1e-6 以内）に到達した開始点の数で、少なければ解が初期点に依存している可能性がある。
@@ -187,14 +214,15 @@ public static class OptimizerFactory
         double[] lowerBounds,
         double[] upperBounds,
         double[]? initialGuess = null,
-        Func<IOptimizer>? optimizerFactory = null,
+        Func<int, IOptimizer>? optimizerFactory = null,
         int numStarts = 5,
-        bool verbose = false)
+        bool verbose = false,
+        int? seed = null)
     {
-        optimizerFactory ??= () => Create(OptimizerType.DifferentialEvolution);
-        string optimizerName = optimizerFactory().Name;
+        optimizerFactory ??= _ => Create(OptimizerType.DifferentialEvolution, seed);
+        string optimizerName = optimizerFactory(0).Name;
         
-        var startPoints = GenerateStartPoints(lowerBounds, upperBounds, initialGuess, numStarts);
+        var startPoints = GenerateStartPoints(lowerBounds, upperBounds, initialGuess, numStarts, DeriveSeed(seed, -1));
         var results = new OptimizationResult?[startPoints.Count];
         
         if (verbose)
@@ -206,7 +234,7 @@ public static class OptimizerFactory
         {
             try
             {
-                var result = optimizerFactory().Optimize(objectiveFunction, lowerBounds, upperBounds, startPoints[idx]);
+                var result = optimizerFactory(idx).Optimize(objectiveFunction, lowerBounds, upperBounds, startPoints[idx]);
                 if (result.Success && double.IsFinite(result.ObjectiveValue))
                     results[idx] = result;
             }
@@ -251,11 +279,12 @@ public static class OptimizerFactory
         double[] lowerBounds,
         double[] upperBounds,
         double[]? initialGuess,
-        int numStarts)
+        int numStarts,
+        int? seed)
     {
         var points = new List<double[]>();
         int dim = lowerBounds.Length;
-        var random = new Random();
+        var random = seed.HasValue ? new Random(seed.Value) : new Random();
         
         // 1. 初期推定値を追加（あれば）
         if (initialGuess != null && initialGuess.Length == dim)

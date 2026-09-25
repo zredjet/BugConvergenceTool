@@ -59,7 +59,7 @@ public class ExcelWriterTests : IDisposable
         using var workbook = new XLWorkbook(_path);
         var ws = workbook.Worksheet("モデル選択");
         Assert.Equal("その他のパラメータ", ws.Cell("A18").GetString());
-        Assert.StartsWith("ψ=", ws.Cell("B18").GetString());
+        Assert.StartsWith("lnψ=", ws.Cell("B18").GetString());
     }
 
     [Fact]
