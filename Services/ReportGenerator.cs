@@ -227,72 +227,27 @@ public class ReportGenerator
         
         AppendUncertainty(sb, bestResult);
         
-        // 感度分析セクション
-        if (bestResult.SensitivityAnalysis != null && bestResult.SensitivityAnalysis.Items.Count > 0)
+        // 推定の安定性（末尾の日を除いた再推定）
+        var stability = bestResult.Stability;
+        if (stability != null)
         {
             sb.AppendLine("--------------------------------------------------------------------------------");
-            sb.AppendLine("【感度分析（パラメータ感度）】");
+            sb.AppendLine("【推定の安定性（末尾の日を除いた再推定）】");
             sb.AppendLine("--------------------------------------------------------------------------------");
             sb.AppendLine();
-            sb.AppendLine($"  分析対象: {bestResult.SensitivityAnalysis.TargetMetricName}");
-            sb.AppendLine($"  基準値:   {bestResult.SensitivityAnalysis.TargetMetricValue:F2}");
-            sb.AppendLine($"  摂動率:   ±{bestResult.SensitivityAnalysis.PerturbationPercent:F1}%");
-            sb.AppendLine($"  総合ロバスト性: {bestResult.SensitivityAnalysis.OverallRobustness}");
-            sb.AppendLine();
-            sb.AppendLine($"{"パラメータ",-12} {"推定値",12} {"弾力性",12} {"ロバスト性",12} {"方向性",8}");
-            sb.AppendLine(new string('-', 60));
-            
-            foreach (var item in bestResult.SensitivityAnalysis.Items.OrderByDescending(i => Math.Abs(i.Elasticity)))
+            sb.AppendLine($"  判定: {stability.Assessment}" +
+                (stability.RelativeRange.HasValue ? $"（総数の変動幅 {stability.RelativeRange:P0}）" : ""));
+            sb.AppendLine($"    {"除いた日数",10} {"使用日数",8} {"推定総数",10}");
+            sb.AppendLine($"    {0,10} {_testData.DayCount,8} {stability.BaseTotalBugs,10:F1}");
+            foreach (var point in stability.Points)
             {
-                sb.AppendLine($"{item.ParameterName,-12} {item.ParameterValue,12:F4} {item.Elasticity,12:F2} {item.Robustness,12} {item.Direction,8}");
+                string total = point.AtUpperBound ? "推定不能" : point.TotalBugs?.ToString("F1") ?? "失敗";
+                sb.AppendLine($"    {point.RemovedDays,10} {point.UsedDays,8} {total,10}");
             }
+            sb.AppendLine($"  * 変動幅 = (最大 - 最小) / 全データでの総数。{StabilityAnalysisResult.StableThreshold:P0} 未満で安定、{StabilityAnalysisResult.UnstableThreshold:P0} 以上で不安定");
+            foreach (var warning in stability.Warnings)
+                sb.AppendLine($"  ⚠ {warning}");
             sb.AppendLine();
-            sb.AppendLine("  * 弾力性: パラメータが1%変化した時の予測値の変化率（%）");
-            sb.AppendLine("  * ロバスト性: 高=安定 (|E|<1), 中=注意 (1≤|E|<5), 低=不安定 (|E|≥5)");
-            sb.AppendLine();
-            
-            // 感度分析の警告
-            if (bestResult.SensitivityAnalysis.Warnings.Count > 0)
-            {
-                sb.AppendLine("  ⚠ 感度分析の警告:");
-                foreach (var warning in bestResult.SensitivityAnalysis.Warnings)
-                {
-                    sb.AppendLine($"    {warning}");
-                }
-                sb.AppendLine();
-            }
-        }
-        
-        // 変化点探索結果セクション
-        if (bestResult.ChangePointSearchResult != null && bestResult.ChangePointSearchResult.Success)
-        {
-            var cpResult = bestResult.ChangePointSearchResult;
-            sb.AppendLine("--------------------------------------------------------------------------------");
-            sb.AppendLine("【変化点探索結果（プロファイル尤度法）】");
-            sb.AppendLine("--------------------------------------------------------------------------------");
-            sb.AppendLine();
-            sb.AppendLine($"  最適変化点:     τ = {cpResult.BestTau} 日目");
-            sb.AppendLine($"  最小AICc:       {cpResult.BestAICc:F2}");
-            sb.AppendLine($"  変化点の信頼性: {cpResult.ChangePointReliability}");
-            sb.AppendLine($"  探索時間:       {cpResult.ElapsedMilliseconds}ms");
-            sb.AppendLine();
-            
-            // プロファイルAICcの概要（上位5候補）
-            if (cpResult.ProfileAICc.Count > 1)
-            {
-                sb.AppendLine("  AICcプロファイル（上位5候補）:");
-                var topCandidates = cpResult.ProfileAICc
-                    .OrderBy(x => x.Value)
-                    .Take(5)
-                    .ToList();
-                
-                foreach (var (tau, aicc) in topCandidates)
-                {
-                    string marker = tau == cpResult.BestTau ? " *" : "";
-                    sb.AppendLine($"    τ={tau,3}: AICc={aicc,10:F2}{marker}");
-                }
-                sb.AppendLine();
-            }
         }
         
         // ホールドアウト検証結果（--holdout-days 指定時）

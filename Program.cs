@@ -168,6 +168,11 @@ class Program
         var tData = testData.GetTimeData();
         var yData = testData.GetCumulativeBugsFound();
         
+        // 推定の安定性（末尾の日を除いて推定し直したときの総数の変化）
+        bestResult.Stability = fitter.AnalyzeStability(bestResult);
+        if (bestResult.Stability != null)
+            bestResult.Warnings.AddRange(bestResult.Stability.Warnings);
+        
         // 2.5. 信頼区間・予測区間（パラメトリック・ブートストラップは両者で共有する）
         if (options.CalculateConfidenceInterval || options.CalculatePredictionInterval)
         {
@@ -237,7 +242,7 @@ class Program
             var predictionTimes = tData;
             
             averagingResult = averagingService.Average(
-                results, models, predictionTimes, testData.DayCount);
+                results, models, predictionTimes, testData.DayCount, tData: tData, yData: yData);
             
             // 結果を表示
             Console.WriteLine(ModelAveragingService.FormatResult(averagingResult));
@@ -456,6 +461,12 @@ class Program
         Console.WriteLine($"推定潜在バグ総数: {bestResult.EstimatedTotalBugs:F1} 件");
         Console.WriteLine($"残り推定バグ数: {bestResult.EstimatedTotalBugs - testData.CurrentCumulativeBugs:F1} 件");
         Console.WriteLine($"使用損失関数: {bestResult.LossFunctionUsed}");
+        if (bestResult.Stability is { } stability)
+        {
+            var totals = stability.Points.Where(p => p.TotalBugs.HasValue && !p.AtUpperBound).Select(p => p.TotalBugs!.Value).ToList();
+            string range = totals.Count > 0 ? $"総数 {totals.Append(stability.BaseTotalBugs).Min():F0}〜{totals.Append(stability.BaseTotalBugs).Max():F0} 件" : "推定不能";
+            Console.WriteLine($"推定の安定性: {stability.Assessment}（末尾 1〜{stability.Points.Count} 日を除いた再推定で{range}）");
+        }
         Console.WriteLine();
         
         foreach (var (name, pred) in bestResult.ConvergencePredictions)

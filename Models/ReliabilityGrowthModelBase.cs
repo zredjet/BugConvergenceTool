@@ -151,9 +151,9 @@ public class FittingResult
     public List<string> Warnings { get; set; } = new();
     
     /// <summary>
-    /// 感度分析結果（推定総バグ数に対する感度）
+    /// 推定の安定性（末尾の日を除いて推定し直したときの総数の変化。推奨モデルのみ）
     /// </summary>
-    public Services.SensitivityReport? SensitivityAnalysis { get; set; }
+    public Services.StabilityAnalysisResult? Stability { get; set; }
     
     /// <summary>
     /// 変化点探索結果（変化点モデルの場合のみ）

@@ -267,28 +267,88 @@ public class ModelFitter
 
         // 収束予測を計算
         CalculateConvergencePredictions(model, parameters, result);
-
-        // 感度分析を実行（推定総バグ数に対する感度）
-        try
+    }
+    
+    /// <summary>
+    /// 推定の安定性を分析する（末尾の 1〜maxRemovedDays 日を除いて推定し直し、推定潜在バグ総数の変化を見る）
+    /// </summary>
+    /// <param name="result">対象の推定結果（通常は推奨モデル）</param>
+    /// <param name="maxRemovedDays">除く末尾の日数の最大（推定に最低 10 日を残す）</param>
+    public StabilityAnalysisResult? AnalyzeStability(FittingResult result, int maxRemovedDays = 5)
+    {
+        if (!result.Success || result.Model == null) return null;
+        int n = _tData.Length;
+        int k = Math.Min(maxRemovedDays, n - 10);
+        if (k < 1) return null;
+        
+        var model = result.Model;
+        var loss = LossFunctionFactory.GetForModel(_lossType, model, out _, out _);
+        var points = new StabilityPoint[k];
+        Parallel.For(1, k + 1, removed =>
         {
-            var sensitivityService = new SensitivityAnalysisService();
-            result.SensitivityAnalysis = sensitivityService.AnalyzeTotalBugsSensitivity(model, parameters);
-
-            // 感度分析の警告を結果に追加
-            if (result.SensitivityAnalysis.Warnings.Count > 0)
+            var t = _tData[..(n - removed)];
+            var y = _yData[..(n - removed)];
+            double? total = null;
+            bool atUpper = false;
+            try
             {
-                result.Warnings.AddRange(result.SensitivityAnalysis.Warnings);
+                var p = Estimate(model, t, y, loss, allowParallel: false)?.Parameters;
+                if (p != null)
+                {
+                    total = model.GetAsymptoticTotalBugs(p);
+                    var (lower, upper) = model.GetBounds(t, y);
+                    atUpper = p[0] >= upper[0] - 1e-3 * (upper[0] - lower[0]);
+                }
             }
-        }
-        catch (Exception ex)
+            catch
+            {
+                // 推定に失敗した打ち切りは null のまま
+            }
+            points[removed - 1] = new StabilityPoint(removed, n - removed, total, atUpper);
+        });
+        
+        var warnings = new List<string>();
+        var valid = points.Where(p => p.TotalBugs.HasValue && double.IsFinite(p.TotalBugs.Value) && !p.AtUpperBound)
+            .Select(p => p.TotalBugs!.Value)
+            .Append(result.EstimatedTotalBugs)
+            .ToList();
+        double? relativeRange = valid.Count >= 2 && result.EstimatedTotalBugs > 0
+            ? (valid.Max() - valid.Min()) / result.EstimatedTotalBugs
+            : null;
+        
+        string assessment;
+        int boundCount = points.Count(p => p.AtUpperBound);
+        if (boundCount > 0)
         {
-            if (_verbose)
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"  [{model.Name}] 感度分析に失敗: {ex.Message}");
-                Console.ResetColor();
-            }
+            assessment = "不安定";
+            warnings.Add($"末尾を除いて推定し直すと、{boundCount}/{k} 回で潜在バグ総数を推定できませんでした（a が上限に張り付き）。収束の兆候は直近の数日のデータだけに依存しています。");
         }
+        else if (relativeRange == null)
+        {
+            assessment = "判定不能";
+        }
+        else if (relativeRange < StabilityAnalysisResult.StableThreshold)
+        {
+            assessment = "安定";
+        }
+        else if (relativeRange < StabilityAnalysisResult.UnstableThreshold)
+        {
+            assessment = "やや不安定";
+        }
+        else
+        {
+            assessment = "不安定";
+            warnings.Add($"末尾の 1〜{k} 日を除いて推定し直すと、推定潜在バグ総数が {valid.Min():F0}〜{valid.Max():F0} 件（全データでの値の {relativeRange:P0}）変動します。推定は直近のデータに大きく依存しており、収束予測の信頼性は低いと考えられます。");
+        }
+        
+        return new StabilityAnalysisResult
+        {
+            BaseTotalBugs = result.EstimatedTotalBugs,
+            Points = points.ToList(),
+            RelativeRange = relativeRange,
+            Assessment = assessment,
+            Warnings = warnings
+        };
     }
 
     /// <summary>
