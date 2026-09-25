@@ -80,7 +80,7 @@ public class GoodnessOfFitTest
     /// <param name="yData">累積バグ発見数</param>
     /// <param name="parameters">モデルパラメータ</param>
     /// <param name="numBins">ビン数（nullの場合は自動決定）</param>
-    /// <returns>(χ²統計量, 自由度, p値, 使用ビン数)</returns>
+    /// <returns>(χ²統計量, 自由度, p値（検定できなければ NaN）, 使用ビン数)</returns>
     public (double statistic, int df, double pValue, int bins) ChiSquareTest(
         ReliabilityGrowthModelBase model,
         double[] tData,
@@ -90,8 +90,9 @@ public class GoodnessOfFitTest
     {
         int n = tData.Length;
         
+        // 検定できない場合は p = NaN（以前は p = 1.0 を返しており、適合性の判定で「パス」に数えられていた）
         if (n < 10)
-            return (0, 0, 1.0, 0);
+            return (0, 0, double.NaN, 0);
         
         // ビン数の決定（Sturgesの公式またはユーザー指定）
         int bins = numBins ?? Math.Max(5, (int)Math.Ceiling(1 + 3.322 * Math.Log10(n)));
@@ -106,7 +107,7 @@ public class GoodnessOfFitTest
         var binResults = AggregateIntoBins(dailyObserved, dailyExpected, bins);
         
         if (binResults.Count < 2)
-            return (0, 0, 1.0, 0);
+            return (0, 0, double.NaN, binResults.Count);
         
         // χ²統計量を計算
         double chiSquare = 0;
@@ -461,7 +462,7 @@ public class GoodnessOfFitTest
         bool isAdequate = determined && DetermineAdequacy(usable.Select(u => u.pValue).ToList());
         string assessment = determined
             ? GenerateAssessment(usable, isAdequate, model.Name)
-            : $"モデル「{model.Name}」の適合性は判定できません（χ² 検定の自由度が残らず、KS・CvM の p 値もブートストラップで較正できないため）。";
+            : $"モデル「{model.Name}」の適合性は判定できません（χ² 検定ができず、KS・CvM の p 値もブートストラップで較正できないため）。";
         
         return new GoodnessOfFitResult
         {
@@ -531,7 +532,7 @@ public class GoodnessOfFitTest
     {
         return pValue switch
         {
-            double.NaN => "自由度が残らないため検定できません（ビン数 ≤ パラメータ数）",
+            double.NaN => "検定できません（データが 10 日未満、またはビン数 ≤ パラメータ数で自由度が残らない）",
             >= 0.10 => "モデルはデータに良く適合しています",
             >= 0.05 => "モデルは許容範囲で適合しています",
             >= 0.01 => "適合度に疑問があります（5%水準で棄却）",

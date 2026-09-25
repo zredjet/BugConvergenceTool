@@ -219,7 +219,8 @@ public static class OptimizerFactory
         bool verbose = false,
         int? seed = null)
     {
-        optimizerFactory ??= _ => Create(OptimizerType.DifferentialEvolution, seed);
+        // 開始点ごとに別のシード（同じシードだと DE の初期集団が初期点以外すべて同じになり、開始点を変える意味がない）
+        optimizerFactory ??= start => Create(OptimizerType.DifferentialEvolution, DeriveSeed(seed, start));
         string optimizerName = optimizerFactory(0).Name;
         
         var startPoints = GenerateStartPoints(lowerBounds, upperBounds, initialGuess, numStarts, DeriveSeed(seed, -1));

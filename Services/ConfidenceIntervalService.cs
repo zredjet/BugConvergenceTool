@@ -226,7 +226,8 @@ public class FisherInformationService
         var result = new FisherInformationResult
         {
             ParameterNames = model.ParameterNames,
-            Parameters = (double[])parameters.Clone()
+            Parameters = (double[])parameters.Clone(),
+            FixedParameters = Enumerable.Range(0, k).Select(i => fixedParameters != null && fixedParameters[i]).ToArray()
         };
         
         try
@@ -340,10 +341,14 @@ public class FisherInformationService
     }
     
     /// <summary>
-    /// 変化点 τ（名前が τ で始まるパラメータ）を固定するマスク
+    /// 発見数だけの Poisson-NHPP 尤度の Fisher 情報行列で固定するパラメータのマスク
     /// </summary>
-    public static bool[] ChangePointMask(ReliabilityGrowthModelBase model)
-        => model.ParameterNames.Select(name => name.StartsWith("τ")).ToArray();
+    /// <remarks>
+    /// 変化点 τ（名前が τ で始まる。尤度が τ について微分できない）と、発見数に効かないパラメータ
+    /// （FRE モデルの η・D など。曲率が 0 でヘッセ行列が特異になる）を固定する。
+    /// </remarks>
+    public static bool[] DetectionLikelihoodMask(ReliabilityGrowthModelBase model)
+        => model.ParameterNames.Select((name, i) => name.StartsWith("τ") || !model.IsDetectionParameter(i)).ToArray();
     
     /// <summary>
     /// パラメータの関数 g(θ) の漸近信頼区間（デルタ法）
@@ -636,6 +641,9 @@ public class FisherInformationResult
     
     /// <summary>推定パラメータ値</summary>
     public double[] Parameters { get; set; } = Array.Empty<double>();
+    
+    /// <summary>固定して計算したパラメータ（変化点 τ など。標準誤差・区間は求めない）</summary>
+    public bool[] FixedParameters { get; set; } = Array.Empty<bool>();
     
     /// <summary>パラメータの標準誤差</summary>
     public double[] StandardErrors { get; set; } = Array.Empty<double>();

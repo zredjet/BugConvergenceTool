@@ -215,6 +215,10 @@ public static class ValidationUtility
     public static (double Lower, double Upper, double TailProbability) PredictiveInterval(
         double predictedIncrement, double logStandardError, double actualIncrement, double level = 0.95)
     {
+        // 予測発見数が求まらない（負・非有限）場合は判定しない（区間外とも区間内ともしない）
+        if (!(predictedIncrement >= 0) || !double.IsFinite(predictedIncrement))
+            return (double.NaN, double.NaN, double.NaN);
+        
         const int gridSize = 200;
         double s = double.IsFinite(logStandardError) && logStandardError > 0 ? logStandardError : 0;
         var lambdas = new double[s > 0 ? gridSize : 1];
@@ -238,14 +242,30 @@ public static class ValidationUtility
             return sum / lambdas.Length;
         }
         
-        double alpha = 1 - level;
-        double lower = double.NaN, upper = double.NaN;
-        for (double x = 0; x < 1e7; x++)
+        // F(x) ≥ p となる最小の整数 x（倍々で上端を見つけてから二分探索する。
+        // 以前は x = 0, 1, 2, … と線形に走査しており、s や予測件数が大きいと数十億回の評価になった）
+        double Quantile(double p)
         {
-            double f = Cdf(x);
-            if (double.IsNaN(lower) && f >= alpha / 2) lower = x;
-            if (f >= 1 - alpha / 2) { upper = x; break; }
+            if (Cdf(0) >= p) return 0;
+            double lo = 0, hi = 1;
+            while (Cdf(hi) < p)
+            {
+                lo = hi;
+                hi *= 2;
+                if (hi > 1e15) return double.PositiveInfinity;
+            }
+            // 不変条件: F(lo) < p ≤ F(hi)
+            while (hi - lo > 1)
+            {
+                double mid = Math.Floor((lo + hi) / 2);
+                if (Cdf(mid) >= p) hi = mid; else lo = mid;
+            }
+            return hi;
         }
+        
+        double alpha = 1 - level;
+        double lower = Quantile(alpha / 2);
+        double upper = Quantile(1 - alpha / 2);
         
         double actual = Math.Round(actualIncrement);
         double tail = Math.Min(1.0, 2 * Math.Min(Cdf(actual), 1 - Cdf(actual - 1)));

@@ -207,9 +207,15 @@ public class InflectionSChangePointModel : ChangePointModelBase
     public override bool IsNaturalBound(int index, bool upper, double bound)
         => (index == 3 && !upper) || base.IsNaturalBound(index, upper, bound);
 
-    // 変曲点は変化点前の発見率 b₁ で見た t* = ln ψ / b₁
+    // 日次発見数の山は実効時間が u(t*) = ln ψ になる日。u(t) は τ で傾きが b₁ から b₂ に変わるので、
+    // ln ψ ≤ b₁τ なら t* = ln ψ / b₁、そうでなければ t* = τ + (ln ψ - b₁τ) / b₂
     public override IEnumerable<(string Name, double Value, string Description)> GetDerivedQuantities(double[] parameters)
-        => InflectionSModel.InflectionPoint(parameters[1], parameters[3]);
+    {
+        double b1 = parameters[1], b2 = parameters[2], logPsi = parameters[3], tau = parameters[4];
+        if (logPsi <= b1 * tau || !(b2 > 0))
+            return InflectionSModel.InflectionPoint(b1, logPsi);
+        return [("t*", tau + (logPsi - b1 * tau) / b2, "（変曲点の日。発見数の日次の山。変化点 τ より後）")];
+    }
 
     public override double[] ToFisherScale(double[] parameters) => InflectionSModel.LogToLinear(parameters, 3);
     public override double[] FromFisherScale(double[] fisherParameters) => InflectionSModel.LinearToLog(fisherParameters, 3);
@@ -378,6 +384,8 @@ public sealed class FixedTauChangePointModel : ReliabilityGrowthModelBase
     
     public override bool IsNaturalBound(int index, bool upper, double bound)
         => _baseModel.IsNaturalBound(index, upper, bound);
+    
+    public override bool IsDetectionParameter(int index) => _baseModel.IsDetectionParameter(index);
     
     public override IEnumerable<(string Name, double Value, string Description)> GetDerivedQuantities(double[] parameters)
         => _baseModel.GetDerivedQuantities(ToFullParameters(parameters));
