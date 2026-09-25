@@ -189,8 +189,12 @@ class Program
                         bestModel, tData, yData, bestResult.ParameterVector);
                     
                     // 適合度検定
+                    // KS・CvM の p 値はパラメータ推定の影響を含めてパラメトリック・ブートストラップで求める
+                    var refit = bestResult.ComparisonGroup != ModelComparisonGroup.DetectionAndCorrection
+                        ? fitter.CreateRefitFunction(bestModel)
+                        : null;
                     bestResult.GoodnessOfFit = gofTest.Test(
-                        bestModel, tData, yData, bestResult.ParameterVector);
+                        bestModel, tData, yData, bestResult.ParameterVector, refit);
                     
                     // 診断レポートを表示
                     Console.WriteLine(DiagnosticReportGenerator.FormatReport(bestResult.Diagnostics));
@@ -200,6 +204,7 @@ class Program
                     Console.WriteLine($"  χ²検定: χ²={bestResult.GoodnessOfFit.ChiSquareStatistic:F2} (df={bestResult.GoodnessOfFit.ChiSquareDegreesOfFreedom}, p={bestResult.GoodnessOfFit.ChiSquarePValue:F4})");
                     Console.WriteLine($"  KS検定: D={bestResult.GoodnessOfFit.KsStatistic:F4} (p={bestResult.GoodnessOfFit.KsPValue:F4})");
                     Console.WriteLine($"  CvM検定: W²={bestResult.GoodnessOfFit.CramerVonMisesStatistic:F4} (p={bestResult.GoodnessOfFit.CramerVonMisesPValue:F4})");
+                    Console.WriteLine($"    （KS・CvM の p 値: {bestResult.GoodnessOfFit.EdfPValueMethod}）");
                     Console.WriteLine();
                 }
                 catch (Exception ex)

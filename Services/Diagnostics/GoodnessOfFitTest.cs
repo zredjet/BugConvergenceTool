@@ -45,6 +45,12 @@ public class GoodnessOfFitResult
     
     /// <summary>サンプルサイズが小さい場合の警告</summary>
     public string? SmallSampleWarning { get; init; }
+    
+    /// <summary>
+    /// KS・CvM 検定の p 値の求め方（"パラメトリック・ブートストラップ（N回）" または
+    /// "漸近分布（パラメータ既知を仮定、保守的）"）
+    /// </summary>
+    public string EdfPValueMethod { get; init; } = "";
 }
 
 /// <summary>
@@ -101,8 +107,10 @@ public class GoodnessOfFitTest
             }
         }
         
-        // 自由度 = ビン数 - 1 - パラメータ数
-        int df = Math.Max(1, binResults.Count - 1 - parameters.Length);
+        // 自由度 = ビン数 - パラメータ数
+        // 各ビンの件数は独立な Poisson 変数で合計は固定されていない（多項分布ではない）ため、
+        // 合計の制約による -1 は不要（以前は -1 しており、自由度が 1 少なかった）
+        int df = Math.Max(1, binResults.Count - parameters.Length);
         
         // p値
         double pValue = 1.0 - MathNet.Numerics.Distributions.ChiSquared.CDF(df, chiSquare);
@@ -288,41 +296,68 @@ public class GoodnessOfFitTest
             .ToArray();
         
         // Cramer-von Mises統計量
-        // W² = 1/(12n) + Σ[(U_i - (2i-1)/(2n))²]
-        double sum = 0;
-        for (int i = 0; i < n; i++)
-        {
-            double diff = transformedTimes[i] - (2.0 * (i + 1) - 1) / (2.0 * n);
-            sum += diff * diff;
-        }
+        double W2 = CramerVonMisesStatistic(transformedTimes);
         
-        double W2 = 1.0 / (12 * n) + sum;
+        // p値: 変換後の値が一様分布に従う（分布が完全に指定された Case 0）ときの W² の分布から求める
+        double pValue = CalculateCvMPValue(W2, n);
         
-        // 修正統計量 (Stephens, 1974)
-        double W2Star = W2 * (1 + 0.5 / n);
-        
-        // p値の近似
-        double pValue = CalculateCvMPValue(W2Star);
-        
-        return (W2Star, pValue);
+        return (W2, pValue);
     }
 
     /// <summary>
-    /// Cramer-von Mises検定のp値を計算
+    /// Cramér-von Mises 統計量 W² = 1/(12n) + Σ(U₍ᵢ₎ - (2i-1)/(2n))²（U は昇順）
     /// </summary>
-    private static double CalculateCvMPValue(double W2)
+    private static double CramerVonMisesStatistic(double[] sortedUniform)
     {
-        // Stephens (1974) の近似
-        if (W2 < 0.0275)
-            return 1.0 - Math.Exp(-13.953 + 775.5 * W2 - 12542.6 * W2 * W2);
-        else if (W2 < 0.051)
-            return 1.0 - Math.Exp(-5.903 + 179.5 * W2 - 1515.3 * W2 * W2);
-        else if (W2 < 0.092)
-            return Math.Exp(0.886 - 31.62 * W2 + 10.89 * W2 * W2);
-        else if (W2 < 1.1)
-            return Math.Exp(1.111 - 34.24 * W2 + 12.83 * W2 * W2);
-        else
-            return 0.0001;
+        int n = sortedUniform.Length;
+        double sum = 0;
+        for (int i = 0; i < n; i++)
+        {
+            double diff = sortedUniform[i] - (2.0 * (i + 1) - 1) / (2.0 * n);
+            sum += diff * diff;
+        }
+        return 1.0 / (12 * n) + sum;
+    }
+    
+    private const int CvMSimulations = 10000;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, double[]> CvMNullDistributions = new();
+    
+    /// <summary>
+    /// Cramér-von Mises 検定の p 値（Case 0: 分布が完全に指定されている場合）
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// n 個の一様乱数から W² の帰無分布をシミュレーション（固定シード、n ごとにキャッシュ）して求める。有限の n でも正確。
+    /// </para>
+    /// <para>
+    /// 以前は Stephens (1974) の「正規分布のパラメータを推定した場合（Case 3）」用の修正統計量と近似式を使っており、
+    /// 正しいモデル・真のパラメータでも約半数が棄却されていた。
+    /// なお本ツールではモデルのパラメータをデータから推定しているため、この p 値は KS 検定と同様にやや大きめ（保守的）になる。
+    /// </para>
+    /// </remarks>
+    private static double CalculateCvMPValue(double W2, int n)
+    {
+        var nullDistribution = CvMNullDistributions.GetOrAdd(n, size =>
+        {
+            var random = new Random(20240601 + size);
+            var sample = new double[size];
+            var statistics = new double[CvMSimulations];
+            for (int s = 0; s < CvMSimulations; s++)
+            {
+                for (int i = 0; i < size; i++) sample[i] = random.NextDouble();
+                Array.Sort(sample);
+                statistics[s] = CramerVonMisesStatistic(sample);
+            }
+            Array.Sort(statistics);
+            return statistics;
+        });
+        
+        // 観測値以上になった割合（+1 補正）
+        int index = Array.BinarySearch(nullDistribution, W2);
+        if (index < 0) index = ~index;
+        while (index > 0 && nullDistribution[index - 1] >= W2) index--;
+        int exceed = nullDistribution.Length - index;
+        return (exceed + 1.0) / (nullDistribution.Length + 1.0);
     }
 
     /// <summary>
@@ -364,11 +399,24 @@ public class GoodnessOfFitTest
     /// <param name="yData">累積バグ発見数</param>
     /// <param name="parameters">モデルパラメータ</param>
     /// <returns>適合度検定結果</returns>
+    /// <summary>
+    /// 適合度検定を実行
+    /// </summary>
+    /// <param name="refit">
+    /// 累積データからパラメータを推定し直す関数。指定すると KS・CvM 検定の p 値をパラメトリック・ブートストラップで求める。
+    /// パラメータをデータから推定している場合、分布が完全に指定された場合の p 値は極端に保守的になり
+    /// （正しいモデルの合成データで 5% 棄却率が 0%）、検定として機能しないため。
+    /// </param>
+    /// <param name="bootstrapIterations">ブートストラップの反復回数</param>
+    /// <param name="seed">乱数シード</param>
     public GoodnessOfFitResult Test(
         ReliabilityGrowthModelBase model,
         double[] tData,
         double[] yData,
-        double[] parameters)
+        double[] parameters,
+        Func<double[], double[]?>? refit = null,
+        int bootstrapIterations = 199,
+        int? seed = 12345)
     {
         int n = tData.Length;
         
@@ -391,6 +439,18 @@ public class GoodnessOfFitTest
         
         // Cramer-von Mises検定
         var (cvm, cvmPValue) = CramerVonMisesTest(model, tData, yData, parameters);
+        
+        // パラメータ推定の影響を反映した p 値（パラメトリック・ブートストラップ）
+        string edfMethod = "漸近分布（パラメータ既知を仮定。推定している場合は保守的）";
+        if (refit != null)
+        {
+            var bootstrap = BootstrapEdfPValues(model, tData, parameters, ks, cvm, refit, bootstrapIterations, seed);
+            if (bootstrap.HasValue)
+            {
+                (ksPValue, cvmPValue) = (bootstrap.Value.ksPValue, bootstrap.Value.cvmPValue);
+                edfMethod = $"パラメトリック・ブートストラップ（{bootstrap.Value.valid}回）";
+            }
+        }
         
         // 解釈を生成
         string chi2Interpretation = InterpretChiSquare(chi2PValue);
@@ -415,10 +475,47 @@ public class GoodnessOfFitTest
             CramerVonMisesPValue = cvmPValue,
             OverallAssessment = assessment,
             IsModelAdequate = isAdequate,
-            SmallSampleWarning = smallSampleWarning
+            SmallSampleWarning = smallSampleWarning,
+            EdfPValueMethod = edfMethod
         };
     }
 
+    /// <summary>
+    /// KS・CvM 統計量の帰無分布をパラメトリック・ブートストラップで求め、p 値を返す
+    /// </summary>
+    /// <remarks>
+    /// θ̂ から発見数を Poisson 再生成し、推定し直した θ* で統計量を計算する（パラメータ推定の影響を含む）。
+    /// p = (観測値以上の数 + 1) / (有効な反復数 + 1)。有効な反復が半数未満なら null。
+    /// </remarks>
+    private (double ksPValue, double cvmPValue, int valid)? BootstrapEdfPValues(
+        ReliabilityGrowthModelBase model, double[] tData, double[] parameters,
+        double observedKs, double observedCvm, Func<double[], double[]?> refit, int iterations, int? seed)
+    {
+        int ksExceed = 0, cvmExceed = 0, valid = 0;
+        int baseSeed = seed ?? Random.Shared.Next();
+        Parallel.For(0, iterations, iter =>
+        {
+            try
+            {
+                var simY = ParametricBootstrap.SimulateCumulative(model, tData, parameters, new Random(unchecked(baseSeed + iter * 7919)));
+                var p = refit(simY);
+                if (p == null) return;
+                var (ks, _) = KolmogorovSmirnovTest(model, tData, simY, p);
+                var (cvm, _) = CramerVonMisesTest(model, tData, simY, p);
+                Interlocked.Increment(ref valid);
+                if (ks >= observedKs) Interlocked.Increment(ref ksExceed);
+                if (cvm >= observedCvm) Interlocked.Increment(ref cvmExceed);
+            }
+            catch
+            {
+                // 失敗した反復は数えない
+            }
+        });
+        
+        if (valid < iterations / 2) return null;
+        return ((ksExceed + 1.0) / (valid + 1.0), (cvmExceed + 1.0) / (valid + 1.0), valid);
+    }
+    
     /// <summary>
     /// χ²検定の解釈
     /// </summary>

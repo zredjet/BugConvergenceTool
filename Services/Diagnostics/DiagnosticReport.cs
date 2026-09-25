@@ -111,13 +111,7 @@ public class DiagnosticReportGenerator
         if (!string.IsNullOrEmpty(autocorrelationResult.SmallSampleWarning))
             warnings.Add(autocorrelationResult.SmallSampleWarning);
         
-        // 3. 正規性検定
-        var normalityResult = _normalityTest.Test(residualResult.Residuals);
-        
-        if (!string.IsNullOrEmpty(normalityResult.SmallSampleWarning))
-            warnings.Add(normalityResult.SmallSampleWarning);
-        
-        // 3.5. Poisson 整合性診断（NHPP の仮定: 日次発見数の分散 = 期待値 を検定）
+        // 3. Poisson 整合性診断（NHPP の仮定: 日次発見数の分散 = 期待値 を検定）
         PoissonConsistentAnalysisResult? poissonResult = null;
         try
         {
@@ -129,15 +123,23 @@ public class DiagnosticReportGenerator
             warnings.Add($"Poisson整合性診断に失敗しました: {ex.Message}");
         }
         
-        // 4. 総合評価を計算
+        // 4. 正規性検定
+        // 日次発見数は離散（期待値が小さいことが多い）ため、Pearson 残差は正しいモデルでも正規分布に従わず、
+        // 正規性検定が棄却されやすい。モデルが正しければ厳密に標準正規分布に従うランダム化分位残差で検定する
+        var normalityResiduals = poissonResult?.GetResidualsForNormalityTest() is { Length: > 0 } rqr ? rqr : residualResult.Residuals;
+        var normalityResult = _normalityTest.Test(normalityResiduals);
+        if (!string.IsNullOrEmpty(normalityResult.SmallSampleWarning))
+            warnings.Add(normalityResult.SmallSampleWarning);
+        
+        // 5. 総合評価を計算
         var (score, grade) = CalculateOverallScore(
             residualResult, autocorrelationResult, normalityResult);
         
-        // 5. 推奨事項を生成
+        // 6. 推奨事項を生成
         recommendations.AddRange(GenerateRecommendations(
             residualResult, autocorrelationResult, normalityResult, grade));
         
-        // 6. 総合評価文を生成
+        // 7. 総合評価文を生成
         string assessment = GenerateAssessment(grade, score, model.Name);
         
         return new DiagnosticReport
@@ -417,7 +419,7 @@ public class DiagnosticReportGenerator
         {
             var n = report.NormalityTest;
             sb.AppendLine("─────────────────────────────────────────────────────────────────");
-            sb.AppendLine("  正規性検定");
+            sb.AppendLine("  正規性検定（ランダム化分位残差）");
             sb.AppendLine("─────────────────────────────────────────────────────────────────");
             sb.AppendLine($"  Jarque-Bera: {n.JarqueBeraStatistic:F4} (p={n.JarqueBeraPValue:F4})");
             sb.AppendLine($"  Anderson-Darling: {n.AndersonDarlingStatistic:F4} (p={n.AndersonDarlingPValue:F4})");
