@@ -649,10 +649,7 @@ public class ModelFitter
                     prediction.PredictedDay = predictedDay.Value;
                     prediction.RemainingDays = predictedDay.Value - currentDay;
 
-                    if (_testData.StartDate.HasValue)
-                    {
-                        prediction.PredictedDate = _testData.StartDate.Value.AddDays(predictedDay.Value - 1);
-                    }
+                    prediction.PredictedDate = _testData.DateForDay(predictedDay.Value);
                 }
             }
 

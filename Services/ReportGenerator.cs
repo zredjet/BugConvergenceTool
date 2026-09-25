@@ -417,7 +417,7 @@ public class ReportGenerator
                 sb.AppendLine($"    {"日",6} {"日付",12} {"予測",8} {"下限",8} {"上限",8}");
                 for (int d = 0; d < pi.FutureTimes.Length; d++)
                 {
-                    string date = _testData.StartDate.HasValue ? _testData.StartDate.Value.AddDays(pi.FutureTimes[d] - 1).ToString("yyyy/MM/dd") : "-";
+                    string date = _testData.DateForDay(pi.FutureTimes[d])?.ToString("yyyy/MM/dd") ?? "-";
                     sb.AppendLine($"    {pi.FutureTimes[d],6:F0} {date,12} {pi.PointForecast[d],8:F1} {pi.Lower[d],8:F0} {pi.Upper[d],8:F0}");
                 }
             }

@@ -81,7 +81,14 @@ class Program
         var testData = reader.ReadFromExcel(options.InputFile);
         
         Console.WriteLine($"プロジェクト: {testData.ProjectName}");
-        Console.WriteLine($"データ件数: {testData.DayCount} 日分");
+        Console.WriteLine($"データ件数: {testData.DayCount} 日分" +
+            (testData.Dates.Count > 0 ? $"（{testData.Dates[0]:yyyy/MM/dd}〜{testData.Dates[^1]:yyyy/MM/dd}）" : ""));
+        foreach (var warning in testData.Warnings)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"注意: {warning}");
+            Console.ResetColor();
+        }
         if (testData.StartDate.HasValue)
             Console.WriteLine($"テスト開始日: {testData.StartDate.Value:yyyy/MM/dd}");
         Console.WriteLine($"オプティマイザ: {options.Optimizer}");
@@ -242,6 +249,7 @@ class Program
             results,
             testData.DayCount,
             testData.GetCumulativeBugsFound().LastOrDefault());
+        warnings.InsertRange(0, testData.Warnings);
         WarningService.PrintWarnings(warnings);
         
         // 4. 出力ディレクトリ作成
@@ -693,7 +701,7 @@ class Program
         int step = Math.Max(1, pi.FutureTimes.Length / 8);
         for (int d = step - 1; d < pi.FutureTimes.Length; d += step)
         {
-            string date = testData.StartDate.HasValue ? testData.StartDate.Value.AddDays(pi.FutureTimes[d] - 1).ToString("yyyy/MM/dd") : "-";
+            string date = testData.DateForDay(pi.FutureTimes[d])?.ToString("yyyy/MM/dd") ?? "-";
             Console.WriteLine($"    {pi.FutureTimes[d],6:F0} {date,12} {pi.PointForecast[d],8:F1} {pi.Lower[d],8:F0} {pi.Upper[d],8:F0}");
         }
     }
