@@ -196,7 +196,7 @@ public class ExcelWriter
         // ヘッダー（ホールドアウト検証の列を追加）
         var hasHoldout = results.Any(r => r.Holdout != null);
         var headers = hasHoldout 
-            ? new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "HO予測発見数", "HO実測発見数", "HO誤差(%)", "HO日次MAE", "損失関数", "95%発見日", "99%発見日" }
+            ? new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "HO予測発見数", "HO95%予測区間", "HO実測発見数", "HO判定", "HO誤差(%)", "HO日次MAE", "損失関数", "95%発見日", "99%発見日" }
             : new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "95%発見日", "99%発見日" };
         for (int i = 0; i < headers.Length; i++)
         {
@@ -231,7 +231,9 @@ public class ExcelWriter
             {
                 var h = result.Holdout;
                 ws.Cell(row, col++).Value = h != null ? h.PredictedIncrement : "-";
+                ws.Cell(row, col++).Value = h != null && double.IsFinite(h.PredictionLower) ? $"[{h.PredictionLower:F0}, {h.PredictionUpper:F0}]" : "-";
                 ws.Cell(row, col++).Value = h != null ? h.ActualIncrement : "-";
+                ws.Cell(row, col++).Value = h == null ? "-" : h.IsOutsidePredictionInterval ? "区間外" : "区間内";
                 ws.Cell(row, col++).Value = result.HoldoutIncrementErrorPercent.HasValue ? result.HoldoutIncrementErrorPercent.Value : "-";
                 ws.Cell(row, col++).Value = h != null ? h.DailyMae : "-";
                 ws.Cell(row, col++).Value = result.LossFunctionUsed;

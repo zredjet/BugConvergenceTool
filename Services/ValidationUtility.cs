@@ -92,6 +92,37 @@ public sealed class HoldoutValidationResult
     public List<string> Warnings { get; init; } = new();
     
     /// <summary>
+    /// 期間発見数の予測区間の下限（件、<see cref="PredictionLevel"/>）
+    /// </summary>
+    public double PredictionLower { get; set; } = double.NaN;
+    
+    /// <summary>
+    /// 期間発見数の予測区間の上限（件）
+    /// </summary>
+    public double PredictionUpper { get; set; } = double.NaN;
+    
+    /// <summary>
+    /// 予測区間の水準
+    /// </summary>
+    public double PredictionLevel { get; set; } = 0.95;
+    
+    /// <summary>
+    /// 実測の期間発見数の両側の裾確率（小さいほど予測から外れている）
+    /// </summary>
+    public double TailProbability { get; set; } = double.NaN;
+    
+    /// <summary>
+    /// 予測区間にパラメータ推定の不確実性（Fisher 情報行列）を含めたか（false なら Poisson 変動のみ）
+    /// </summary>
+    public bool IncludesParameterUncertainty { get; set; }
+    
+    /// <summary>
+    /// 実測の期間発見数が予測区間の外にあるか
+    /// </summary>
+    public bool IsOutsidePredictionInterval =>
+        double.IsFinite(PredictionLower) && (ActualIncrement < PredictionLower || ActualIncrement > PredictionUpper);
+    
+    /// <summary>
     /// 日次増分の予測値（テスト期間）
     /// </summary>
     public double[] PredictedDaily { get; init; } = Array.Empty<double>();
@@ -167,6 +198,58 @@ public static class ValidationUtility
             TestValues = yData[trainCount..],
             Warning = warning
         };
+    }
+    
+    /// <summary>
+    /// ホールドアウト期間の発見数の予測分布（Poisson と、パラメータの不確実性の対数正規分布の混合）の区間と裾確率
+    /// </summary>
+    /// <param name="predictedIncrement">予測発見数 Δ̂ = m(T_end) - m(T_train)</param>
+    /// <param name="logStandardError">ln Δ̂ の標準誤差（パラメータの不確実性。0 なら Poisson のみ）</param>
+    /// <param name="actualIncrement">実測発見数</param>
+    /// <param name="level">予測区間の水準</param>
+    /// <remarks>
+    /// X ~ Poisson(Λ)、ln Λ ~ N(ln Δ̂, s²) とし、Λ の分布を正規分位点の格子（200 点）で平均する（決定的）。
+    /// 以前は相対誤差 30%・60% の固定しきい値で警告しており、Poisson 変動だけで正しいモデルでも
+    /// 末尾 5 日で約半数に警告が出ていた。
+    /// </remarks>
+    public static (double Lower, double Upper, double TailProbability) PredictiveInterval(
+        double predictedIncrement, double logStandardError, double actualIncrement, double level = 0.95)
+    {
+        const int gridSize = 200;
+        double s = double.IsFinite(logStandardError) && logStandardError > 0 ? logStandardError : 0;
+        var lambdas = new double[s > 0 ? gridSize : 1];
+        if (s > 0)
+        {
+            for (int j = 0; j < gridSize; j++)
+                lambdas[j] = predictedIncrement * Math.Exp(s * MathNet.Numerics.Distributions.Normal.InvCDF(0, 1, (j + 0.5) / gridSize));
+        }
+        else
+        {
+            lambdas[0] = predictedIncrement;
+        }
+        
+        // 混合分布の累積分布関数 F(x) = P(X ≤ x)
+        double Cdf(double x)
+        {
+            if (x < 0) return 0;
+            double sum = 0;
+            foreach (double lambda in lambdas)
+                sum += lambda > 1e-12 ? MathNet.Numerics.Distributions.Poisson.CDF(lambda, Math.Floor(x)) : 1.0;
+            return sum / lambdas.Length;
+        }
+        
+        double alpha = 1 - level;
+        double lower = double.NaN, upper = double.NaN;
+        for (double x = 0; x < 1e7; x++)
+        {
+            double f = Cdf(x);
+            if (double.IsNaN(lower) && f >= alpha / 2) lower = x;
+            if (f >= 1 - alpha / 2) { upper = x; break; }
+        }
+        
+        double actual = Math.Round(actualIncrement);
+        double tail = Math.Min(1.0, 2 * Math.Min(Cdf(actual), 1 - Cdf(actual - 1)));
+        return (lower, upper, tail);
     }
     
     /// <summary>

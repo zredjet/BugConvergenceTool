@@ -433,14 +433,47 @@ public class ModelFitter
             _splitResult.TestValues,
             _splitResult.TrainValues[^1]);
 
+        // 予測区間（Poisson 変動 + 訓練区間の推定の不確実性）で、実測の発見数が予測から外れているかを判定する
+        double logSe = HoldoutLogStandardError(model, trainParameters);
+        var (lower, upper, tail) = ValidationUtility.PredictiveInterval(validation.PredictedIncrement, logSe, validation.ActualIncrement);
+        validation.PredictionLower = lower;
+        validation.PredictionUpper = upper;
+        validation.TailProbability = tail;
+        validation.IncludesParameterUncertainty = double.IsFinite(logSe);
+
         result.Holdout = validation;
         result.HoldoutTrainParameters = trainParameters;
         result.Warnings.AddRange(validation.Warnings);
 
         if (_verbose)
         {
-            Console.WriteLine($"    -> ホールドアウト検証: 期間発見数 予測={validation.PredictedIncrement:F1} 実測={validation.ActualIncrement:F0} " +
+            Console.WriteLine($"    -> ホールドアウト検証: 期間発見数 予測={validation.PredictedIncrement:F1} [{lower:F0}, {upper:F0}] 実測={validation.ActualIncrement:F0} " +
                 $"(誤差 {validation.IncrementErrorPercent:+0.0;-0.0}%), 日次MAE={validation.DailyMae:F2}");
+        }
+    }
+
+    /// <summary>
+    /// ホールドアウト期間の予測発見数 Δ = m(T_end) - m(T_train) の対数の標準誤差
+    /// （訓練区間の Poisson-NHPP 尤度の Fisher 情報行列とデルタ法。変化点 τ は固定。計算できなければ NaN）
+    /// </summary>
+    private double HoldoutLogStandardError(ReliabilityGrowthModelBase model, double[] trainParameters)
+    {
+        var split = _splitResult!;
+        double tTrain = split.TrainTimes[^1], tEnd = split.TestTimes[^1];
+        try
+        {
+            var service = new FisherInformationService();
+            var fisher = service.CalculateNHPPStandardErrors(
+                model, split.TrainTimes, split.TrainValues, trainParameters, FisherInformationService.ChangePointMask(model));
+            if (!fisher.Success || fisher.CovarianceMatrix == null) return double.NaN;
+            var interval = service.CalculateDerivedInterval(
+                p => model.Calculate(tEnd, p) - model.Calculate(tTrain, p), trainParameters, fisher.CovarianceMatrix, logScale: true);
+            // CalculateDerivedInterval の対数スケールの標準誤差は Δ̂·SE[ln Δ] なので戻す
+            return interval.Estimate > 0 ? interval.StandardError / interval.Estimate : double.NaN;
+        }
+        catch
+        {
+            return double.NaN;
         }
     }
 

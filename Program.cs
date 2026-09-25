@@ -435,6 +435,7 @@ class Program
         {
             Console.WriteLine("\n=== ホールドアウト検証結果 ===\n");
             Console.WriteLine("  HO誤差 = 末尾期間の発見数について（訓練区間のみで推定したモデルの予測 - 実測）/ 実測。正は過大予測");
+            Console.WriteLine("  予測の当否は、実測が予測区間（Poisson 変動 + 推定の不確実性）の内か外かで判定します（誤差の大きさは参考）");
             Console.WriteLine("  ※ 表の他の列（AIC・潜在バグ等）は全データで推定した最終結果です");
             
             var bestHoldout = results.Where(r => r.Success && r.HoldoutAbsIncrementErrorPercent.HasValue)
@@ -449,17 +450,18 @@ class Program
             if (bestResult.Holdout != null)
             {
                 var h = bestResult.Holdout;
-                Console.WriteLine($"推奨モデル {bestResult.ModelName}: 予測 {h.PredictedIncrement:F1} 件 / 実測 {h.ActualIncrement:F0} 件" +
+                Console.WriteLine($"推奨モデル {bestResult.ModelName}: 予測 {h.PredictedIncrement:F1} 件 {h.PredictionLevel:P0}予測区間 [{h.PredictionLower:F0}, {h.PredictionUpper:F0}] / 実測 {h.ActualIncrement:F0} 件" +
                     (double.IsFinite(h.IncrementErrorPercent) ? $", 誤差 {h.IncrementErrorPercent:+0.0;-0.0}%" : "") +
                     $", 日次MAE {h.DailyMae:F2} 件/日");
             }
             
-            // 警告の表示
-            var modelsWithHighError = results.Where(r => r.Success && r.HoldoutAbsIncrementErrorPercent > WarningService.Thresholds.HighHoldoutError).ToList();
-            if (modelsWithHighError.Any())
+            // 警告の表示（実測の発見数が予測区間の外にあるモデル）
+            var modelsOutside = results.Where(r => r.Success && r.Holdout?.IsOutsidePredictionInterval == true).ToList();
+            if (modelsOutside.Any())
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"注意: {modelsWithHighError.Count}個のモデルでHO誤差の絶対値 > {WarningService.Thresholds.HighHoldoutError:F0}%（予測精度が低い可能性）");
+                Console.WriteLine($"注意: {modelsOutside.Count}個のモデルで末尾期間の実測発見数が95%予測区間の外（予測精度が低い可能性）: " +
+                    string.Join("、", modelsOutside.Select(r => r.ModelName)));
                 Console.ResetColor();
             }
         }

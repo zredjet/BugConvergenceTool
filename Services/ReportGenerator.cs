@@ -409,17 +409,20 @@ public class ReportGenerator
         sb.AppendLine($"  末尾 {resultsWithHoldout[0].Holdout!.TestCount} 日を除いた訓練区間でパラメータを推定し直し、末尾期間の発見数を予測して評価しています。");
         sb.AppendLine("  （他のセクションの結果は全データで推定した最終結果です）");
         sb.AppendLine();
-        sb.AppendLine($"{PadRightByWidth("モデル名", 28)} {PadLeftByWidth("予測発見数", 12)} {PadLeftByWidth("実測発見数", 12)} {PadLeftByWidth("誤差(%)", 10)} {PadLeftByWidth("日次MAE", 10)} {PadLeftByWidth("日次RMSE", 10)}");
-        sb.AppendLine(new string('-', 88));
+        sb.AppendLine($"{PadRightByWidth("モデル名", 28)} {PadLeftByWidth("予測発見数", 12)} {PadLeftByWidth("95%予測区間", 14)} {PadLeftByWidth("実測発見数", 12)} {PadLeftByWidth("判定", 6)} {PadLeftByWidth("誤差(%)", 10)} {PadLeftByWidth("日次MAE", 10)} {PadLeftByWidth("日次RMSE", 10)}");
+        sb.AppendLine(new string('-', 110));
         
         foreach (var result in resultsWithHoldout.OrderBy(r => r.HoldoutAbsIncrementErrorPercent ?? double.MaxValue))
         {
             var h = result.Holdout!;
             string errStr = result.HoldoutIncrementErrorPercent.HasValue ? $"{result.HoldoutIncrementErrorPercent:+0.0;-0.0}" : "-";
-            sb.AppendLine($"{PadRightByWidth(result.ModelName, 28)} {h.PredictedIncrement,12:F1} {h.ActualIncrement,12:F0} {errStr,10} {h.DailyMae,10:F2} {h.DailyRmse,10:F2}");
+            string range = double.IsFinite(h.PredictionLower) ? $"[{h.PredictionLower:F0}, {h.PredictionUpper:F0}]" : "-";
+            string verdict = h.IsOutsidePredictionInterval ? "区間外" : "区間内";
+            sb.AppendLine($"{PadRightByWidth(result.ModelName, 28)} {h.PredictedIncrement,12:F1} {range,14} {h.ActualIncrement,12:F0} {PadLeftByWidth(verdict, 6)} {errStr,10} {h.DailyMae,10:F2} {h.DailyRmse,10:F2}");
         }
         sb.AppendLine();
-        sb.AppendLine("  * 誤差 = (予測発見数 - 実測発見数) / 実測発見数。正は過大予測、負は過小予測");
+        sb.AppendLine("  * 予測区間 = Poisson 変動と訓練区間の推定の不確実性（Fisher 情報行列）を含む区間。区間外なら予測が外れていると判定");
+        sb.AppendLine("  * 誤差 = (予測発見数 - 実測発見数) / 実測発見数。正は過大予測、負は過小予測（件数が少ないと大きくなりやすいので参考）");
         sb.AppendLine("  * 日次MAE/RMSE = 日次発見数の予測誤差（件/日）");
         sb.AppendLine();
     }

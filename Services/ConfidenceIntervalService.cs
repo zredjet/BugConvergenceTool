@@ -208,14 +208,20 @@ public class FisherInformationService
     /// 観測Fisher情報行列を用いた標準誤差計算。
     /// Poisson-NHPP仮定が満たされる場合、SSEベースより正確。
     /// </remarks>
+    /// <param name="fixedParameters">
+    /// 固定して扱う（分散 0 とする）パラメータ。変化点 τ のように尤度が微分できないパラメータに使う
+    /// （τ を固定した条件付きの共分散になるので、τ の不確実性は含まない）。null なら固定しない
+    /// </param>
     public FisherInformationResult CalculateNHPPStandardErrors(
         ReliabilityGrowthModelBase model,
         double[] tData,
         double[] yData,
-        double[] parameters)
+        double[] parameters,
+        bool[]? fixedParameters = null)
     {
         int n = tData.Length;
         int k = parameters.Length;
+        var free = Enumerable.Range(0, k).Where(i => fixedParameters == null || !fixedParameters[i]).ToArray();
         
         var result = new FisherInformationResult
         {
@@ -228,9 +234,11 @@ public class FisherInformationService
             // Fisher 情報行列はモデルが指定する座標 q で求める（ln ψ のように平らになりやすい座標を避ける）
             var q0 = model.ToFisherScale(parameters);
             
-            // 負の対数尤度関数（Poisson-NHPP）
-            Func<double[], double> negLogLik = q =>
+            // 負の対数尤度関数（Poisson-NHPP。固定しないパラメータだけの関数）
+            Func<double[], double> negLogLik = qFree =>
             {
+                var q = (double[])q0.Clone();
+                for (int j = 0; j < free.Length; j++) q[free[j]] = qFree[j];
                 var p = model.FromFisherScale(q);
                 double logL = 0;
                 double prevM = 0;
@@ -249,12 +257,20 @@ public class FisherInformationService
                 return -logL; // 負の対数尤度を返す
             };
             
-            // 観測Fisher情報行列（負の対数尤度のヘッセ行列、座標 q）
-            var observedFisher = CalculateHessian(negLogLik, q0);
+            // 観測Fisher情報行列（負の対数尤度のヘッセ行列、座標 q の固定しないパラメータ）
+            var observedFisher = CalculateHessian(negLogLik, free.Select(i => q0[i]).ToArray());
             result.ObservedFisherMatrix = observedFisher;
             
-            // 逆行列 = 分散共分散行列
-            var covQ = InvertMatrix(observedFisher);
+            // 逆行列 = 分散共分散行列（固定したパラメータの行・列は 0）
+            var covFree = InvertMatrix(observedFisher);
+            double[,]? covQ = null;
+            if (covFree != null)
+            {
+                covQ = new double[k, k];
+                for (int a = 0; a < free.Length; a++)
+                    for (int b = 0; b < free.Length; b++)
+                        covQ[free[a], free[b]] = covFree[a, b];
+            }
             
             if (covQ == null)
             {
@@ -269,11 +285,11 @@ public class FisherInformationService
             
             result.CovarianceMatrix = covMatrix;
             
-            // 標準誤差
+            // 標準誤差（固定したパラメータは NaN）
             var se = new double[k];
             for (int i = 0; i < k; i++)
             {
-                se[i] = covMatrix[i, i] > 0 ? Math.Sqrt(covMatrix[i, i]) : double.NaN;
+                se[i] = covMatrix[i, i] > 0 && free.Contains(i) ? Math.Sqrt(covMatrix[i, i]) : double.NaN;
             }
             result.StandardErrors = se;
             
@@ -322,6 +338,12 @@ public class FisherInformationService
         
         return result;
     }
+    
+    /// <summary>
+    /// 変化点 τ（名前が τ で始まるパラメータ）を固定するマスク
+    /// </summary>
+    public static bool[] ChangePointMask(ReliabilityGrowthModelBase model)
+        => model.ParameterNames.Select(name => name.StartsWith("τ")).ToArray();
     
     /// <summary>
     /// パラメータの関数 g(θ) の漸近信頼区間（デルタ法）
