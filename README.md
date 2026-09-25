@@ -65,6 +65,38 @@ dotnet test tests/BugConvergenceTool.Tests
 - 発行先（既定は `bin/Release/net10.0/win-x64/publish/`）には、実行ファイルと `Templates` フォルダ（結果 Excel のテンプレートと既定の設定ファイル）が出力されます。配布するときは `Templates` フォルダも実行ファイルと同じ場所に置いてください。
 - `IncludeNativeLibrariesForSelfExtract` を付けない場合は、グラフ描画用のネイティブライブラリ（Windows では `libSkiaSharp.dll`）が別ファイルとして出力されるため、これも一緒に配布してください。
 
+### ビルド済みの実行ファイル（GitHub Releases）
+
+[Releases](https://github.com/zredjet/BugConvergenceTool/releases) から、.NET のインストールが不要な実行ファイルをダウンロードできます。
+
+| ファイル | 対象 |
+|---------|------|
+| `BugConvergenceTool-<バージョン>-win-x64.zip` | Windows（x64） |
+| `BugConvergenceTool-<バージョン>-osx-arm64.tar.gz` | macOS（Apple Silicon） |
+
+展開したフォルダの実行ファイルをそのまま使います（`Templates` フォルダは実行ファイルと同じ場所に置いたままにしてください）。
+
+- **macOS**: 実行ファイルはコード署名・公証をしていないため、初回は Gatekeeper にブロックされます。展開したフォルダで `xattr -dr com.apple.quarantine .` を実行してから起動してください。
+- **Windows**: SmartScreen の警告が表示された場合は「詳細情報」→「実行」を選んでください。
+
+### CI とリリース手順
+
+GitHub Actions で次を実行します。
+
+| ワークフロー | タイミング | 内容 |
+|-------------|-----------|------|
+| CI（`.github/workflows/ci.yml`） | PR、main への push | Windows・macOS で単体テスト |
+| Release（`.github/workflows/release.yml`） | `v` で始まるタグの push | Windows・macOS で単体テスト → 発行 → 発行した実行ファイルをサンプルデータで実行して動作確認 → GitHub Release を作成してアーカイブを添付 |
+
+リリースするには、main でタグを付けて push します（タグの `v` を除いた部分がバージョンになります。`v1.1.0-rc.1` のようにハイフンを含むタグはプレリリースになります）。
+
+```bash
+git tag v1.1.0
+git push origin v1.1.0
+```
+
+Release ワークフローは手動実行（Actions タブの「Run workflow」）もでき、その場合はリリースを作らずにアーカイブを Actions の成果物としてアップロードします。動作確認で出力したグラフも成果物（`smoke-output-*`）として 7 日間残るので、文字化けなどを目視で確認できます。
+
 ## 使用方法
 
 ```bash
