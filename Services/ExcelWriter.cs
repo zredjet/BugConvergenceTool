@@ -108,17 +108,62 @@ public class ExcelWriter
     /// </remarks>
     private static XLCellValue DetectionRateCell(FittingResult result)
     {
-        foreach (var name in new[] { "b", "b₁", "b1" })
+        var name = DetectionRateParameterName(result);
+        return name != null ? result.Parameters[name] : "-";
+    }
+    
+    private static string? DetectionRateParameterName(FittingResult result) =>
+        new[] { "b", "b₁", "b1" }.FirstOrDefault(result.Parameters.ContainsKey);
+    
+    /// <summary>
+    /// 「その他のパラメータ」欄の値（a・発見率の欄のパラメータ・c 以外。なければ "-"）
+    /// </summary>
+    private static string OtherParametersText(FittingResult result)
+    {
+        var shown = new HashSet<string?> { "a", "c", DetectionRateParameterName(result) };
+        var others = result.Parameters
+            .Where(p => !shown.Contains(p.Key))
+            .Select(p => $"{p.Key}={p.Value:G4}")
+            .ToList();
+        return others.Count > 0 ? string.Join(", ", others) : "-";
+    }
+    
+    /// <summary>
+    /// 「利用可能なモデル」欄（行5〜12）を、実装されている基本モデルの一覧で書き直す
+    /// </summary>
+    /// <remarks>
+    /// 以前はテンプレートの記述をそのまま残していたため、削除済みのモデル（修正ゴンペルツ・ロジスティック・
+    /// 不完全デバッグ系）や旧式のゴンペルツの式が表示されていた。
+    /// </remarks>
+    public static void WriteAvailableModels(IXLWorksheet ws)
+    {
+        const int firstRow = 5;
+        const int lastRow = 12;
+        ws.Range(firstRow, 1, lastRow, 4).Clear(XLClearOptions.Contents);
+        
+        int row = firstRow;
+        foreach (var model in ModelFactory.GetBasicModels())
         {
-            if (result.Parameters.TryGetValue(name, out double value))
-                return value;
+            ws.Cell(row, 1).Value = model.Name;
+            ws.Cell(row, 2).Value = model.Formula;
+            ws.Cell(row, 3).Value = model.Category;
+            ws.Cell(row, 4).Value = model.Description;
+            row++;
         }
-        return "-";
+        
+        ws.Cell(row, 1).Value = "拡張モデル";
+        ws.Cell(row, 2).Value = "--change-point / --tef / --fre で追加";
+        ws.Cell(row, 3).Value = "変化点・TEF組込・欠陥除去効率";
+        ws.Cell(row, 4).Value = "数式は README を参照";
+        
+        ws.Cell("A16").Value = "パラメータb（変化点モデルは b₁）";
+        ws.Cell("A18").Value = "その他のパラメータ";
     }
     
     private void WriteModelSheet(XLWorkbook workbook, List<FittingResult> results, FittingResult bestResult)
     {
         var ws = workbook.Worksheet("モデル選択");
+        WriteAvailableModels(ws);
         
         // 選択モデルの結果
         ws.Cell("B14").Value = bestResult.ModelName;
@@ -126,7 +171,7 @@ public class ExcelWriter
         ws.Cell("B16").Value = DetectionRateCell(bestResult);
         ws.Cell("B17").Value = bestResult.Parameters.ContainsKey("c") 
             ? bestResult.Parameters["c"].ToString("F4") : "-";
-        ws.Cell("B18").Value = "-";  // 旧「不完全デバッグ率」欄（該当モデルは削除済み）
+        ws.Cell("B18").Value = OtherParametersText(bestResult);
         
         // 適合度指標
         ws.Cell("B20").Value = bestResult.R2;
