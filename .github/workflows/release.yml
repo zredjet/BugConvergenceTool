@@ -1,0 +1,133 @@
+# リリース用ビルド（Windows x64・macOS Apple Silicon）
+#
+# - v で始まるタグ（例: v1.2.0）を push すると、各 OS でテスト・発行・動作確認を行い、
+#   GitHub Release を作成して実行ファイルのアーカイブを添付する
+# - 手動実行（workflow_dispatch）と、このワークフロー・プロジェクトファイルを変更した PR では、
+#   リリースは作らずにアーカイブを Actions の成果物としてアップロードする
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - BugConvergenceTool.csproj
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            exe: BugConvergenceTool.exe
+          - os: macos-latest
+            rid: osx-arm64
+            exe: BugConvergenceTool
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: バージョンの決定
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            echo "VERSION_PROPERTY=-p:Version=$version" >> "$GITHUB_ENV"
+          else
+            version="dev-${GITHUB_SHA::7}"
+            echo "VERSION_PROPERTY=" >> "$GITHUB_ENV"
+          fi
+          echo "PACKAGE=BugConvergenceTool-$version-${{ matrix.rid }}" >> "$GITHUB_ENV"
+
+      - name: 単体テスト
+        run: dotnet test tests/BugConvergenceTool.Tests -c Release
+
+      # ソリューションには単体テストのプロジェクトも含まれるため、プロジェクトを指定する（NETSDK1098 回避）
+      - name: 発行
+        run: |
+          dotnet publish BugConvergenceTool.csproj -c Release -r ${{ matrix.rid }} --self-contained \
+            -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:DebugType=None ${VERSION_PROPERTY:+"$VERSION_PROPERTY"} \
+            -o "dist/$PACKAGE"
+          cp README.md LICENSE "dist/$PACKAGE/"
+          ls -la "dist/$PACKAGE" "dist/$PACKAGE/Templates"
+
+      # 発行した実行ファイルを、別のディレクトリからサンプルデータで実行する
+      # （実行ファイルの隣の Templates を見つけられること、ネイティブライブラリを含めて単体で動くことの確認）
+      - name: 動作確認
+        run: |
+          work="$RUNNER_TEMP/smoke"
+          mkdir -p "$work"
+          cp Templates/Template.xlsx "$work/TestData.xlsx"
+          cd "$work"
+          "$GITHUB_WORKSPACE/dist/$PACKAGE/${{ matrix.exe }}" TestData.xlsx \
+            --all-extended --holdout-days 5 -d --pi --ma --ci --bootstrap 50 --lrt-iterations 19
+          ls Result_*.xlsx Result_*.txt
+          for chart in test_progress bug_cumulative remaining_bugs bug_convergence reliability_growth; do
+            ls Charts_*/"$chart.png"
+          done
+
+      - name: アーカイブ作成
+        run: |
+          cd dist
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a "$PACKAGE.zip" "$PACKAGE" > /dev/null
+            echo "ARCHIVE=dist/$PACKAGE.zip" >> "$GITHUB_ENV"
+          else
+            # 実行権限を保つため tar.gz にする
+            tar -czf "$PACKAGE.tar.gz" "$PACKAGE"
+            echo "ARCHIVE=dist/$PACKAGE.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-${{ matrix.rid }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+      # グラフの文字化けなどを目視で確認できるよう、動作確認の出力も残す
+      - uses: actions/upload-artifact@v7
+        with:
+          name: smoke-output-${{ matrix.rid }}
+          path: ${{ runner.temp }}/smoke
+          retention-days: 7
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+
+      - name: GitHub Release の作成
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          # v1.2.0-rc.1 のようにハイフンを含むタグはプレリリースにする
+          prerelease=""
+          [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease="--prerelease"
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes ${prerelease:+"$prerelease"}
