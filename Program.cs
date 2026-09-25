@@ -108,6 +108,11 @@ class Program
         Console.WriteLine($"モデル: {string.Join(", ", modelTypes)}");
         Console.WriteLine();
         
+        // 乱数シード（--seed → 設定ファイルの Bootstrap.RandomSeed → 既定値）。
+        // 最適化手法・ブートストラップ・尤度比検定のすべてに使い、同じ入力なら同じ結果になるようにする
+        int seed = options.Seed ?? ConfigurationService.Current.Bootstrap.RandomSeed ?? CommandOptions.DefaultSeed;
+        Console.WriteLine($"乱数シード: {seed}");
+        
         // 2. モデルフィッティング
         Console.WriteLine("モデルフィッティング中...");
         var fitter = new ModelFitter(
@@ -116,7 +121,8 @@ class Program
             options.Verbose,
             options.LossFunction,
             options.HoldoutDays,
-            options.MultiStarts);
+            options.MultiStarts,
+            seed);
         
         if (options.MultiStarts > 1 && options.Optimizer == OptimizerType.AutoSelect)
         {
@@ -145,7 +151,7 @@ class Program
             {
                 Console.WriteLine($"変化点の尤度比検定中（シミュレーション {options.LrtIterations} 回）...");
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                int tested = fitter.TestChangePoints(results, options.LrtIterations, ConfigurationService.Current.Bootstrap.RandomSeed);
+                int tested = fitter.TestChangePoints(results, options.LrtIterations, seed);
                 Console.WriteLine(tested > 0
                     ? $"  {tested} モデルを検定しました（{stopwatch.Elapsed.TotalSeconds:F1}秒）"
                     : "  検定は不要でした（変化点モデルより AIC の小さい変化点なしのモデルがあるため）");
@@ -176,7 +182,7 @@ class Program
         // 2.5. 信頼区間・予測区間（パラメトリック・ブートストラップは両者で共有する）
         if (options.CalculateConfidenceInterval || options.CalculatePredictionInterval)
         {
-            CalculateIntervals(options, fitter, bestResult, tData, yData, testData.DayCount);
+            CalculateIntervals(options, fitter, bestResult, tData, yData, testData.DayCount, seed);
         }
         
         // 3. 結果表示
@@ -206,7 +212,7 @@ class Program
                         ? fitter.CreateRefitFunction(bestModel)
                         : null;
                     bestResult.GoodnessOfFit = gofTest.Test(
-                        bestModel, tData, yData, bestResult.ParameterVector, refit);
+                        bestModel, tData, yData, bestResult.ParameterVector, refit, seed: seed);
                     
                     // 診断レポートを表示
                     Console.WriteLine(DiagnosticReportGenerator.FormatReport(bestResult.Diagnostics));
@@ -582,7 +588,7 @@ class Program
     /// 信頼区間（--ci）と予測区間（--pi）を計算する。パラメトリック・ブートストラップは1回だけ実行して共有する
     /// </summary>
     static void CalculateIntervals(
-        CommandOptions options, ModelFitter fitter, FittingResult bestResult, double[] tData, double[] yData, int dayCount)
+        CommandOptions options, ModelFitter fitter, FittingResult bestResult, double[] tData, double[] yData, int dayCount, int seed)
     {
         var bootstrapSettings = ConfigurationService.Current.Bootstrap;
         int iterations = options.BootstrapIterations > 0 ? options.BootstrapIterations : bootstrapSettings.Iterations;
@@ -596,7 +602,7 @@ class Program
             Console.WriteLine($"パラメトリック・ブートストラップで{level * 100:F0}%区間を計算中（{iterations}回）...");
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             var bootstrap = ParametricBootstrap.Run(
-                model, tData, bestResult.ParameterVector, fitter.CreateRefitFunction(model), iterations, bootstrapSettings.RandomSeed);
+                model, tData, bestResult.ParameterVector, fitter.CreateRefitFunction(model), iterations, seed);
             Console.WriteLine($"  再推定の成功 {bootstrap.Succeeded}/{bootstrap.Requested}（{stopwatch.Elapsed.TotalSeconds:F1}秒）");
             
             // 予測期間: 観測期間と同じ長さ（14〜180日）
@@ -611,7 +617,7 @@ class Program
             if (options.CalculatePredictionInterval)
             {
                 bestResult.PredictionInterval = new PredictionIntervalService().Calculate(
-                    model, tData, yData, bestResult.ParameterVector, bootstrap, horizon, level, bootstrapSettings.RandomSeed);
+                    model, tData, yData, bestResult.ParameterVector, bootstrap, horizon, level, seed);
             }
         }
         else
@@ -906,6 +912,13 @@ class Program
                     if (i + 1 < args.Length && int.TryParse(args[++i], out int lrt))
                         options.LrtIterations = Math.Max(0, lrt);
                     break;
+                
+                case "--seed":
+                    if (i + 1 < args.Length && int.TryParse(args[++i], out int seedValue))
+                        options.Seed = seedValue;
+                    else
+                        options.Notices.Add("--seed には整数を指定してください。既定のシードを使います。");
+                    break;
                     
                 default:
                     if (!args[i].StartsWith("-"))
@@ -953,6 +966,7 @@ class Program
         Console.WriteLine("  --fre                 欠陥除去効率モデルを含める");
         Console.WriteLine("  --all-extended        全拡張モデルを含める");
         Console.WriteLine("  --lrt-iterations N    変化点の尤度比検定のシミュレーション回数（デフォルト: 99、0 で省略）");
+        Console.WriteLine("  --seed N              乱数シード（最適化・ブートストラップ・検定に使用。デフォルト: 設定ファイルの値、なければ固定値）");
         Console.WriteLine();
         Console.WriteLine("設定オプション:");
         Console.WriteLine("  -c, --config FILE     設定ファイルを指定");
@@ -1050,4 +1064,10 @@ class CommandOptions
     
     // 変化点の尤度比検定のシミュレーション回数（0 なら検定しない）
     public int LrtIterations { get; set; } = 99;
+    
+    // 乱数シード（null なら設定ファイルの Bootstrap.RandomSeed、それもなければ DefaultSeed）
+    public int? Seed { get; set; }
+    
+    /// <summary>シードを指定しないときの既定値（同じ入力なら毎回同じ結果にする）</summary>
+    public const int DefaultSeed = 20240601;
 }

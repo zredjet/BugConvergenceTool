@@ -18,6 +18,7 @@ public class ModelFitter
     private readonly LossType _lossType;
     private readonly int _holdoutDays;
     private readonly int _multiStarts;
+    private readonly int? _seed;
 
     // ホールドアウト用のデータ分割結果
     private TimeSeriesSplitResult? _splitResult;
@@ -37,13 +38,18 @@ public class ModelFitter
     /// <param name="lossType">損失関数</param>
     /// <param name="holdoutDays">ホールドアウト検証に使う末尾の日数（0 なら検証しない）</param>
     /// <param name="multiStarts">マルチスタート最適化の開始点数（1 ならマルチスタートしない）</param>
+    /// <param name="seed">
+    /// 最適化手法の乱数シード（null なら毎回異なる）。推定ごとのシードは、このシード・モデル名・データの内容から決まるので、
+    /// ブートストラップなどで並列に推定しても実行順によらず同じ結果になる
+    /// </param>
     public ModelFitter(
         TestData testData,
         OptimizerType optimizerType = OptimizerType.DifferentialEvolution,
         bool verbose = false,
         LossType lossType = LossType.Mle,
         int holdoutDays = 0,
-        int multiStarts = 1)
+        int multiStarts = 1,
+        int? seed = null)
     {
         _testData = testData;
         _tData = testData.GetTimeData();
@@ -59,6 +65,7 @@ public class ModelFitter
         _lossType = lossType;
         _holdoutDays = holdoutDays;
         _multiStarts = Math.Max(1, multiStarts);
+        _seed = seed;
 
         // ホールドアウト検証用のデータ分割
         if (holdoutDays > 0)
@@ -638,6 +645,7 @@ public class ModelFitter
         // 全モデルで損失関数を使用（FREモデルの場合は発見+修正の同時推定）
         Func<double[], double> objective = p => lossFunction.Evaluate(tData, yData, model, p, _yFixedData);
         bool log = _verbose && allowParallel;
+        int? seed = EstimationSeed(model, tData, yData);
 
         OptimizationResult result;
 
@@ -646,19 +654,20 @@ public class ModelFitter
             if (log)
                 Console.WriteLine($"  [{model.Name}] 全アルゴリズムで最適化中...");
 
-            result = OptimizerFactory.AutoOptimize(objective, lower, upper, initial, log);
+            result = OptimizerFactory.AutoOptimize(objective, lower, upper, initial, log, seed);
         }
         else if (_multiStarts > 1)
         {
             result = OptimizerFactory.MultiStartOptimize(
                 objective, lower, upper, initial,
-                optimizerFactory: () => OptimizerFactory.Create(_optimizerType),
+                optimizerFactory: start => OptimizerFactory.Create(_optimizerType, OptimizerFactory.DeriveSeed(seed, start)),
                 numStarts: _multiStarts,
-                verbose: log);
+                verbose: log,
+                seed: seed);
         }
         else
         {
-            var optimizer = OptimizerFactory.Create(_optimizerType);
+            var optimizer = OptimizerFactory.Create(_optimizerType, seed);
 
             if (log)
                 Console.WriteLine($"  [{model.Name}] {optimizer.Name}で最適化中...");
@@ -674,6 +683,21 @@ public class ModelFitter
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 推定1回分の乱数シード（基準シード・モデル名・データの内容から決定的に作る。基準シードがなければ null）
+    /// </summary>
+    private int? EstimationSeed(ReliabilityGrowthModelBase model, double[] tData, double[] yData)
+    {
+        if (!_seed.HasValue) return null;
+        // string.GetHashCode はプロセスごとに変わるため使わない（FNV-1a）
+        ulong h = 14695981039346656037UL;
+        void Mix(ulong v) { unchecked { h = (h ^ v) * 1099511628211UL; } }
+        foreach (char c in model.Name) Mix(c);
+        foreach (double v in tData) Mix((ulong)BitConverter.DoubleToInt64Bits(v));
+        foreach (double v in yData) Mix((ulong)BitConverter.DoubleToInt64Bits(v));
+        return OptimizerFactory.DeriveSeed(_seed, unchecked((int)(h ^ (h >> 32))));
     }
 
     /// <summary>
