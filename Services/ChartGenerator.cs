@@ -275,8 +275,7 @@ public class ChartGenerator
         var allModels = ModelFactory.GetAllExtendedModels(
             includeChangePoint: true,
             includeTEF: true,
-            includeFRE: true,
-            includeCoverage: true);
+            includeFRE: true);
         return allModels.FirstOrDefault(m => m.Name == result.ModelName)
             ?? ModelFactory.GetAllModels().First(m => m.Name == result.ModelName);
     }

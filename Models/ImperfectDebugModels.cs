@@ -202,8 +202,7 @@ public static class ModelFactory
     public static IEnumerable<ReliabilityGrowthModelBase> GetAllExtendedModels(
         bool includeChangePoint = true,
         bool includeTEF = true,
-        bool includeFRE = true,
-        bool includeCoverage = true)
+        bool includeFRE = true)
     {
         // 基本モデル
         foreach (var m in GetBasicModels())
@@ -231,13 +230,6 @@ public static class ModelFactory
         if (includeFRE)
         {
             foreach (var m in FREModelFactory.GetBasicFREModels())
-                yield return m;
-        }
-
-        // Coverage モデル
-        if (includeCoverage)
-        {
-            foreach (var m in CoverageModelFactory.GetRecommendedCoverageModels())
                 yield return m;
         }
     }
@@ -274,7 +266,6 @@ public static class ModelFactory
         yield return "変化点";
         yield return "TEF組込";
         yield return "欠陥除去効率";
-        yield return "Coverage";
         yield return "統合";
     }
 }

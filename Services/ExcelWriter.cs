@@ -100,8 +100,8 @@ public class ExcelWriter
         // ヘッダー（ホールドアウト検証の列を追加）
         var hasHoldout = results.Any(r => r.HoldoutMse.HasValue);
         var headers = hasHoldout 
-            ? new[] { "モデル名", "カテゴリ", "R²", "MSE", "AIC", "潜在バグ数", "不完全デバッグ率", "Holdout_MSE", "Holdout_MAPE(%)", "損失関数", "95%発見日", "99%発見日" }
-            : new[] { "モデル名", "カテゴリ", "R²", "MSE", "AIC", "潜在バグ数", "不完全デバッグ率", "95%発見日", "99%発見日" };
+            ? new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "不完全デバッグ率", "Holdout_MSE", "Holdout_MAPE(%)", "損失関数", "95%発見日", "99%発見日" }
+            : new[] { "モデル名", "カテゴリ", "比較グループ", "R²", "MSE", "AIC", "AICc", "選択基準", "Δ(グループ内)", "潜在バグ数", "不完全デバッグ率", "95%発見日", "99%発見日" };
         for (int i = 0; i < headers.Length; i++)
         {
             var cell = ws.Cell(startRow + 1, i + 1);
@@ -113,14 +113,21 @@ public class ExcelWriter
         
         // データ
         int row = startRow + 2;
-        foreach (var result in results.Where(r => r.Success && !r.ModelSelectionCriterion.StartsWith("Invalid")).OrderBy(r => r.SelectionScore))
+        // AIC は比較グループ内でのみ比較可能なため、グループ順・グループ内の選択基準値順に並べる
+        var ranked = ModelComparisonGroup.GroupAndRank(results)
+            .SelectMany(g => g.Results.Select(r => (Result: r, Delta: r.SelectionScore - g.Results[0].SelectionScore)));
+        foreach (var (result, delta) in ranked)
         {
             int col = 1;
             ws.Cell(row, col++).Value = result.ModelName;
             ws.Cell(row, col++).Value = result.Category;
+            ws.Cell(row, col++).Value = result.ComparisonGroup;
             ws.Cell(row, col++).Value = result.R2;
             ws.Cell(row, col++).Value = result.MSE;
             ws.Cell(row, col++).Value = result.AIC;
+            ws.Cell(row, col++).Value = result.AICc;
+            ws.Cell(row, col++).Value = result.ModelSelectionCriterion;
+            ws.Cell(row, col++).Value = delta;
             ws.Cell(row, col++).Value = result.EstimatedTotalBugs;
             ws.Cell(row, col++).Value = result.ImperfectDebugRate.HasValue 
                 ? $"{result.ImperfectDebugRate.Value * 100:F1}%" : "-";
@@ -226,8 +233,7 @@ public class ExcelWriter
         var allModels = ModelFactory.GetAllExtendedModels(
             includeChangePoint: true,
             includeTEF: true,
-            includeFRE: true,
-            includeCoverage: true);
+            includeFRE: true);
         var model = allModels.FirstOrDefault(m => m.Name == bestResult.ModelName)
             ?? ModelFactory.GetAllModels().First(m => m.Name == bestResult.ModelName);
         var parameters = bestResult.Parameters.Values.ToArray();

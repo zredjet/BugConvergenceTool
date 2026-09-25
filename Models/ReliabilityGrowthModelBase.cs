@@ -32,7 +32,12 @@ public class FittingResult
     /// ModelSelectionCriterion に応じて AIC または AICc の値を返す
     /// </summary>
     public double SelectionScore => ModelSelectionCriterion == "AICc" ? AICc : AIC;
-    
+
+    /// <summary>
+    /// 比較グループ（AIC を比較できるモデルの組。<see cref="Services.ModelComparisonGroup"/> 参照）
+    /// </summary>
+    public string ComparisonGroup { get; set; } = Services.ModelComparisonGroup.DetectionOnly;
+
     public double[] PredictedValues { get; set; } = Array.Empty<double>();
     public bool Success { get; set; }
     public string? ErrorMessage { get; set; }

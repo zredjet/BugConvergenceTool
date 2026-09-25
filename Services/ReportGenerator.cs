@@ -121,23 +121,29 @@ public class ReportGenerator
         sb.AppendLine("【モデル比較結果】");
         sb.AppendLine("--------------------------------------------------------------------------------");
         sb.AppendLine();
-        sb.AppendLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {PadLeftByWidth("R²", colNum)} {PadLeftByWidth("MSE", colNum)} {PadLeftByWidth("AIC", colNum)} {PadLeftByWidth("潜在バグ", colNum)}");
-        sb.AppendLine(new string('-', 92));
-        
-        foreach (var result in results.Where(r => r.Success && !r.ModelSelectionCriterion.StartsWith("Invalid")).OrderBy(r => r.SelectionScore))
+        // AIC は同じデータ・同じ尤度のモデル同士でしか比較できないため、比較グループごとに出力する
+        foreach (var (group, groupResults) in ModelComparisonGroup.GroupAndRank(results))
         {
-            string marker = result.ModelName == bestResult.ModelName ? " *" : "";
-            string modelNameWithMarker = result.ModelName + marker;
-            sb.AppendLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.MSE,colNum:F2} {result.AIC,colNum:F2} {result.EstimatedTotalBugs,colNum:F1}");
+            string criterionName = groupResults[0].ModelSelectionCriterion;
+            double minScore = groupResults[0].SelectionScore;
+            
+            sb.AppendLine($"【比較グループ: {group}】{ModelComparisonGroup.Describe(group)}");
+            sb.AppendLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {PadLeftByWidth("R²", colNum)} {PadLeftByWidth("MSE", colNum)} {PadLeftByWidth(criterionName, colNum)} {PadLeftByWidth("Δ" + criterionName, colNum)} {PadLeftByWidth("潜在バグ", colNum)}");
+            sb.AppendLine(new string('-', 103));
+            
+            foreach (var result in groupResults)
+            {
+                string marker = result.ModelName == bestResult.ModelName ? " *" : "";
+                string modelNameWithMarker = result.ModelName + marker;
+                sb.AppendLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.MSE,colNum:F2} {result.SelectionScore,colNum:F2} {result.SelectionScore - minScore,colNum:F2} {result.EstimatedTotalBugs,colNum:F1}");
+            }
+            sb.AppendLine();
         }
-        sb.AppendLine();
         var criterion = bestResult.ModelSelectionCriterion;
-        sb.AppendLine($"  * = 推奨モデル（{criterion}最小）");
+        sb.AppendLine($"  * = 推奨モデル（比較グループ「{bestResult.ComparisonGroup}」内で{criterion}最小、損失関数: {bestResult.LossFunctionUsed}）");
         if (criterion == "AICc")
         {
-            int n = _testData.DayCount;
-            int k = bestResult.ParameterVector.Length;
-            sb.AppendLine($"      （小標本補正適用: n={n}, k={k}, n/k={n/(double)k:F1} < 40）");
+            sb.AppendLine($"      （小標本補正: n={_testData.DayCount} に対し n/k < 40 のモデルがあるため、グループ内は AICc で統一）");
         }
         sb.AppendLine();
         

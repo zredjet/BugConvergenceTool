@@ -22,6 +22,14 @@ class Program
             return options.ShowHelp ? 0 : 1;
         }
         
+        if (options.Notices.Count > 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            foreach (var notice in options.Notices)
+                Console.WriteLine($"注意: {notice}");
+            Console.ResetColor();
+        }
+        
         // 設定ファイルの読み込み
         if (!string.IsNullOrEmpty(options.ConfigFile))
         {
@@ -91,7 +99,6 @@ class Program
         if (options.IncludeChangePoint) modelTypes.Add("変化点");
         if (options.IncludeTEF) modelTypes.Add("TEF組込");
         if (options.IncludeFRE) modelTypes.Add("FRE");
-        if (options.IncludeCoverage) modelTypes.Add("Coverage");
         Console.WriteLine($"モデル: {string.Join(", ", modelTypes)}");
         Console.WriteLine();
         
@@ -105,15 +112,14 @@ class Program
             options.HoldoutDays);
         
         List<FittingResult> results;
-        if (options.AllExtended || options.IncludeChangePoint || options.IncludeTEF || options.IncludeFRE || options.IncludeCoverage)
+        if (options.AllExtended || options.IncludeChangePoint || options.IncludeTEF || options.IncludeFRE)
         {
             // 拡張モデルを使用
             var models = ModelFactory.GetAllExtendedModels(
                 options.IncludeChangePoint,
                 options.IncludeTEF,
-                options.IncludeFRE,
-                options.IncludeCoverage);
-            results = models.Select(m => fitter.FitModel(m)).ToList();
+                options.IncludeFRE);
+            results = fitter.FitModels(models);
         }
         else
         {
@@ -346,64 +352,50 @@ class Program
         const int colModel = 28;
         const int colCategory = 14;
         const int colNum = 10;
+        int lineWidth = colModel + colCategory + colNum * (4 + (hasHoldout ? 1 : 0) + (verbose ? 1 : 0)) + 6;
         
-        // ヘッダー
-        if (hasHoldout)
+        // AIC は同じデータ・同じ尤度のモデル同士でしか比較できないため、比較グループごとに表示する
+        foreach (var (group, groupResults) in ModelComparisonGroup.GroupAndRank(results))
         {
-            if (verbose)
-                Console.WriteLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {"R²",colNum} {"AIC",colNum} {"MAPE(%)",colNum} {"潜在バグ",colNum} {"時間(ms)",colNum}");
-            else
-                Console.WriteLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {"R²",colNum} {"AIC",colNum} {"MAPE(%)",colNum} {"潜在バグ",colNum}");
-            Console.WriteLine(new string('-', verbose ? 105 : 92));
-        }
-        else
-        {
-            if (verbose)
-                Console.WriteLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {"R²",colNum} {"AIC",colNum} {"潜在バグ",colNum} {"時間(ms)",colNum}");
-            else
-                Console.WriteLine($"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {"R²",colNum} {"AIC",colNum} {"潜在バグ",colNum}");
-            Console.WriteLine(new string('-', verbose ? 93 : 80));
-        }
-        
-        foreach (var result in results.Where(r => r.Success && !r.ModelSelectionCriterion.StartsWith("Invalid")).OrderBy(r => r.SelectionScore))
-        {
-            bool isBest = result.ModelName == bestResult.ModelName;
+            string criterionName = groupResults[0].ModelSelectionCriterion;
+            double minScore = groupResults[0].SelectionScore;
             
-            if (isBest)
-                Console.ForegroundColor = ConsoleColor.Green;
-            else if (result.Category == "不完全デバッグ")
-                Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"【比較グループ: {group}】{ModelComparisonGroup.Describe(group)}");
             
-            string marker = isBest ? " *" : "";
-            string modelNameWithMarker = result.ModelName + marker;
-            string mapeStr = result.HoldoutMape.HasValue ? $"{result.HoldoutMape:F2}" : "-";
+            string header = $"{PadRightByWidth("モデル名", colModel)} {PadRightByWidth("カテゴリ", colCategory)} {"R²",colNum} {criterionName,colNum} {"Δ" + criterionName,colNum}";
+            if (hasHoldout) header += $" {"MAPE(%)",colNum}";
+            header += $" {"潜在バグ",colNum}";
+            if (verbose) header += $" {"時間(ms)",colNum}";
+            Console.WriteLine(header);
+            Console.WriteLine(new string('-', lineWidth));
             
-            if (hasHoldout)
+            foreach (var result in groupResults)
             {
-                if (verbose)
-                    Console.WriteLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.AIC,colNum:F2} {mapeStr,colNum} {result.EstimatedTotalBugs,colNum:F1} {result.OptimizationTimeMs,colNum}");
-                else
-                    Console.WriteLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.AIC,colNum:F2} {mapeStr,colNum} {result.EstimatedTotalBugs,colNum:F1}");
+                bool isBest = result.ModelName == bestResult.ModelName;
+                
+                if (isBest)
+                    Console.ForegroundColor = ConsoleColor.Green;
+                else if (result.Category == "不完全デバッグ")
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                
+                string modelNameWithMarker = result.ModelName + (isBest ? " *" : "");
+                string line = $"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.SelectionScore,colNum:F2} {result.SelectionScore - minScore,colNum:F2}";
+                if (hasHoldout) line += $" {(result.HoldoutMape.HasValue ? $"{result.HoldoutMape:F2}" : "-"),colNum}";
+                line += $" {result.EstimatedTotalBugs,colNum:F1}";
+                if (verbose) line += $" {result.OptimizationTimeMs,colNum}";
+                Console.WriteLine(line);
+                
+                Console.ResetColor();
             }
-            else
-            {
-                if (verbose)
-                    Console.WriteLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.AIC,colNum:F2} {result.EstimatedTotalBugs,colNum:F1} {result.OptimizationTimeMs,colNum}");
-                else
-                    Console.WriteLine($"{PadRightByWidth(modelNameWithMarker, colModel)} {PadRightByWidth(result.Category, colCategory)} {result.R2,colNum:F4} {result.AIC,colNum:F2} {result.EstimatedTotalBugs,colNum:F1}");
-            }
-            
-            Console.ResetColor();
+            Console.WriteLine();
         }
         
         // 使用された評価基準を表示
         var criterion = bestResult.ModelSelectionCriterion;
-        Console.WriteLine($"\n* = 推奨モデル（{criterion}最小）");
+        Console.WriteLine($"* = 推奨モデル（比較グループ「{bestResult.ComparisonGroup}」内で{criterion}最小、損失関数: {bestResult.LossFunctionUsed}）");
         if (criterion == "AICc")
         {
-            int n = testData.DayCount;
-            int k = bestResult.ParameterVector.Length;
-            Console.WriteLine($"  （小標本補正適用: n={n}, k={k}, n/k={n/(double)k:F1} < 40）");
+            Console.WriteLine($"  （小標本補正: n={testData.DayCount} に対し n/k < 40 のモデルがあるため、グループ内は AICc で統一）");
         }
         
         // ホールドアウト検証サマリー
@@ -565,8 +557,7 @@ class Program
         var allModels = ModelFactory.GetAllExtendedModels(
             includeChangePoint: true,
             includeTEF: true,
-            includeFRE: true,
-            includeCoverage: true);
+            includeFRE: true);
         
         return allModels.FirstOrDefault(m => m.Name == modelName)
             ?? ModelFactory.GetAllModels().FirstOrDefault(m => m.Name == modelName);
@@ -579,13 +570,12 @@ class Program
     {
         var models = new List<ReliabilityGrowthModelBase>();
         
-        if (options.AllExtended || options.IncludeChangePoint || options.IncludeTEF || options.IncludeFRE || options.IncludeCoverage)
+        if (options.AllExtended || options.IncludeChangePoint || options.IncludeTEF || options.IncludeFRE)
         {
             models.AddRange(ModelFactory.GetAllExtendedModels(
                 options.IncludeChangePoint,
                 options.IncludeTEF,
-                options.IncludeFRE,
-                options.IncludeCoverage));
+                options.IncludeFRE));
         }
         else
         {
@@ -684,7 +674,8 @@ class Program
                     break;
 
                 case "--coverage":
-                    options.IncludeCoverage = true;
+                    // 擬似Coverageモデルは基本モデル（Ohba型・ロジスティック・ゴンペルツ）と数学的に同一のため廃止
+                    options.Notices.Add("--coverage は廃止しました（擬似Coverageモデルは基本モデルの再パラメータ化で同一のモデルのため）。このオプションは無視されます。");
                     break;
 
                 case "--all-extended":
@@ -692,7 +683,6 @@ class Program
                     options.IncludeChangePoint = true;
                     options.IncludeTEF = true;
                     options.IncludeFRE = true;
-                    options.IncludeCoverage = true;
                     break;
                 
                 case "-c":
@@ -720,8 +710,10 @@ class Program
                         {
                             "mle" => LossType.Mle,
                             "sse" => LossType.Sse,
-                            _ => LossType.Sse
+                            _ => LossType.Mle
                         };
+                        if (loss != "mle" && loss != "sse")
+                            options.Notices.Add($"--loss の値 '{loss}' は不明なため、MLE を使用します。");
                     }
                     break;
                 
@@ -794,7 +786,6 @@ class Program
         Console.WriteLine("  --change-point        変化点モデルを含める");
         Console.WriteLine("  --tef                 テスト工数関数モデルを含める");
         Console.WriteLine("  --fre                 欠陥除去効率モデルを含める");
-        Console.WriteLine("  --coverage            Coverageモデルを含める");
         Console.WriteLine("  --all-extended        全拡張モデルを含める");
         Console.WriteLine();
         Console.WriteLine("設定オプション:");
@@ -807,8 +798,8 @@ class Program
         Console.WriteLine();
         Console.WriteLine("推定・検証オプション:");
         Console.WriteLine("  --loss TYPE           損失関数を指定:");
-        Console.WriteLine("                          sse - 残差二乗和（デフォルト）");
-        Console.WriteLine("                          mle - 最尤推定（Poisson-NHPP）");
+        Console.WriteLine("                          mle - 最尤推定（Poisson-NHPP、デフォルト）");
+        Console.WriteLine("                          sse - 残差二乗和（従来方式。AIC によるモデル選択は不正確）");
         Console.WriteLine("  --holdout-days N      末尾N日をホールドアウト検証に使用");
         Console.WriteLine("                        （訓練データで推定し、テストデータで予測精度を評価）");
         Console.WriteLine();
@@ -826,7 +817,7 @@ class Program
         Console.WriteLine("  BugConvergenceTool TestData.xlsx --optimizer pso");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx --change-point --fre");
         Console.WriteLine("  BugConvergenceTool TestData.xlsx --all-extended -v");
-        Console.WriteLine("  BugConvergenceTool TestData.xlsx --loss mle --holdout-days 5");
+        Console.WriteLine("  BugConvergenceTool TestData.xlsx --loss sse --holdout-days 5");
         Console.WriteLine();
         Console.WriteLine("入力Excelの形式:");
         Console.WriteLine("  「データ入力」シートに以下の形式でデータを配置:");
@@ -860,7 +851,6 @@ class CommandOptions
     public bool IncludeChangePoint { get; set; } = false;
     public bool IncludeTEF { get; set; } = false;
     public bool IncludeFRE { get; set; } = false;
-    public bool IncludeCoverage { get; set; } = false;
     public bool AllExtended { get; set; } = false;
     
     // 信頼区間オプション
@@ -868,7 +858,10 @@ class CommandOptions
     public int BootstrapIterations { get; set; } = 200;
     
     // 損失関数オプション
-    public LossType LossFunction { get; set; } = LossType.Sse;
+    public LossType LossFunction { get; set; } = LossType.Mle;
+    
+    // 実行時に表示する注意（廃止オプション・不正な値など）
+    public List<string> Notices { get; } = new();
     
     // ホールドアウト検証オプション
     public int HoldoutDays { get; set; } = 0;

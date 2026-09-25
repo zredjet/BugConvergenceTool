@@ -27,7 +27,7 @@ public class ModelFitter
         TestData testData, 
         OptimizerType optimizerType = OptimizerType.DifferentialEvolution, 
         bool verbose = false,
-        LossType lossType = LossType.Sse,
+        LossType lossType = LossType.Mle,
         int holdoutDays = 0)
     {
         _testData = testData;
@@ -94,6 +94,9 @@ public class ModelFitter
                 _lossType, model, out var actualLossType, out var fallbackWarning);
             
             result.LossFunctionUsed = actualLossType == LossType.Mle ? "MLE" : "SSE";
+            
+            // AIC を比較できるモデルの組（尤度に含まれるデータで決まる）
+            result.ComparisonGroup = ModelComparisonGroup.Determine(model, hasCorrectionData: _yFixedData != null);
             
             if (fallbackWarning != null)
             {
@@ -249,23 +252,37 @@ public class ModelFitter
             ? ModelFactory.GetAllModels() 
             : ModelFactory.GetBasicModels();
         
-        return models.Select(FitModel).ToList();
+        return FitModels(models);
     }
     
     /// <summary>
-    /// 最適モデル（SelectionScore最小）を取得
-    /// SelectionScore は n/k < 40 の場合 AICc、それ以外は AIC
+    /// 指定モデル群でフィッティングを実行し、比較グループ内の選択基準（AIC/AICc）を揃える
     /// </summary>
+    public List<FittingResult> FitModels(IEnumerable<ReliabilityGrowthModelBase> models)
+    {
+        var results = models.Select(FitModel).ToList();
+        ModelComparisonGroup.HarmonizeCriterion(results);
+        return results;
+    }
+    
+    /// <summary>
+    /// 推奨モデル（比較グループ内で SelectionScore 最小）を取得
+    /// </summary>
+    /// <remarks>
+    /// AIC は同じデータ・同じ尤度のモデル同士でしか比較できないため、
+    /// 発見数のみの尤度のグループ（存在しなければ優先順で次のグループ）から選ぶ。
+    /// </remarks>
     public FittingResult? GetBestModel(List<FittingResult> results, string? category = null)
     {
-        var filtered = results.Where(r => r.Success);
+        var filtered = results.Where(ModelComparisonGroup.IsComparable);
         
         if (category != null)
             filtered = filtered.Where(r => r.Category == category);
         
-        // Invalid なモデルを除外し、SelectionScore でソート
+        var primaryGroup = ModelComparisonGroup.SelectPrimaryGroup(filtered);
+        
         return filtered
-            .Where(r => !r.ModelSelectionCriterion.StartsWith("Invalid"))
+            .Where(r => r.ComparisonGroup == primaryGroup)
             .OrderBy(r => r.SelectionScore)
             .FirstOrDefault();
     }

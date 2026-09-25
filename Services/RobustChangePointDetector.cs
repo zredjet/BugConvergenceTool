@@ -104,7 +104,7 @@ public class RobustChangePointDetector
     
     public RobustChangePointDetector(
         OptimizerType optimizerType = OptimizerType.NelderMead,
-        LossType lossType = LossType.Sse,
+        LossType lossType = LossType.Mle,
         bool verbose = false)
     {
         _optimizerType = optimizerType;

@@ -77,6 +77,23 @@ public class ModelAveragingService
     private const double MIN_WEIGHT_THRESHOLD = 0.01; // 1%未満のモデルは「有効」カウントから除外
 
     /// <summary>
+    /// AIC 重みを計算できる結果（推奨モデルと同じ比較グループ）だけを選ぶ
+    /// </summary>
+    /// <remarks>
+    /// 尤度に含むデータが異なるモデル（FRE・TEF）とは AIC を比較できないため、
+    /// 異なる比較グループのモデルに重みを付けない。
+    /// </remarks>
+    private static List<FittingResult> SelectComparableResults(IEnumerable<FittingResult> results)
+    {
+        var comparable = results
+            .Where(ModelComparisonGroup.IsComparable)
+            .Where(r => double.IsFinite(r.AIC) && double.IsFinite(r.AICc))
+            .ToList();
+        var primaryGroup = ModelComparisonGroup.SelectPrimaryGroup(comparable);
+        return comparable.Where(r => r.ComparisonGroup == primaryGroup).ToList();
+    }
+
+    /// <summary>
     /// AIC重みを計算
     /// </summary>
     /// <param name="results">フィッティング結果のリスト</param>
@@ -86,9 +103,7 @@ public class ModelAveragingService
         IEnumerable<FittingResult> results,
         bool? useAICc = null)
     {
-        var validResults = results
-            .Where(r => r.Success && !double.IsInfinity(r.AIC) && !double.IsNaN(r.AIC))
-            .ToList();
+        var validResults = SelectComparableResults(results);
         
         if (!validResults.Any())
             return new Dictionary<string, double>();
@@ -136,9 +151,7 @@ public class ModelAveragingService
         int currentDay = 0,
         bool? useAICc = null)
     {
-        var validResults = results
-            .Where(r => r.Success && !double.IsInfinity(r.AIC))
-            .ToList();
+        var validResults = SelectComparableResults(results);
         
         if (!validResults.Any())
         {
