@@ -23,6 +23,7 @@ public static class ParameterDescriptions
         "η₀" => "（初期の欠陥除去効率）",
         "η∞" => "（漸近的な欠陥除去効率）",
         "λ" => "（除去効率の学習速度）",
+        "D" => "（平均修正遅れ（日）。発見から修正までの遅れ、0 で発見と同時に修正）",
         _ when name.StartsWith("τ") => "（変化点）",
         _ when name.StartsWith("b") && int.TryParse(name[1..], out int k) => $"（第{k}区間の発見率）",
         _ when name.StartsWith("TEF_") => "（テスト工数関数のパラメータ）",
