@@ -24,10 +24,51 @@ public class ExcelWriterTests : IDisposable
         if (File.Exists(_path)) File.Delete(_path);
     }
 
-    private void Write(TestData data)
+    private void Write(TestData data, ReliabilityGrowthModelBase? model = null)
     {
-        var result = new ModelFitter(data).FitModel(new ExponentialModel());
+        var result = new ModelFitter(data).FitModel(model ?? new ExponentialModel());
         new ExcelWriter(data).WriteResults(TemplatePath, _path, [result], result);
+    }
+
+    [Fact]
+    public void ModelSheet_ListsImplementedBasicModels_WithoutRemovedModels()
+    {
+        Write(TestHelpers.CreateGoelOkumotoData());
+
+        using var workbook = new XLWorkbook(_path);
+        var ws = workbook.Worksheet("モデル選択");
+        var basicModels = ModelFactory.GetBasicModels().ToList();
+        for (int i = 0; i < basicModels.Count; i++)
+        {
+            Assert.Equal(basicModels[i].Name, ws.Cell(5 + i, 1).GetString());
+            Assert.Equal(basicModels[i].Formula, ws.Cell(5 + i, 2).GetString());
+        }
+
+        // 以前はテンプレートに削除済みのモデル（修正ゴンペルツ・ロジスティック・不完全デバッグ系）が残っていた
+        var text = string.Join("\n", ws.Range("A3:D18").CellsUsed().Select(c => c.GetString()));
+        Assert.DoesNotContain("不完全デバッグ", text);
+        Assert.DoesNotContain("修正ゴンペルツ", text);
+        Assert.DoesNotContain("ロジスティック", text);
+    }
+
+    [Fact]
+    public void ModelSheet_ShowsParametersOtherThanABC()
+    {
+        Write(TestHelpers.CreateGoelOkumotoData(), new InflectionSModel());
+
+        using var workbook = new XLWorkbook(_path);
+        var ws = workbook.Worksheet("モデル選択");
+        Assert.Equal("その他のパラメータ", ws.Cell("A18").GetString());
+        Assert.StartsWith("ψ=", ws.Cell("B18").GetString());
+    }
+
+    [Fact]
+    public void ModelSheet_WithoutOtherParameters_ShowsDash()
+    {
+        Write(TestHelpers.CreateGoelOkumotoData());
+
+        using var workbook = new XLWorkbook(_path);
+        Assert.Equal("-", workbook.Worksheet("モデル選択").Cell("B18").GetString());
     }
 
     [Theory]
