@@ -61,11 +61,8 @@ public class ChartGenerator
         actualPlot.MarkerSize = 5;
         
         plt.Title("テスト消化曲線（バーンダウン）");
-        plt.Axes.Title.Label.FontName = "Yu Gothic UI";
         plt.XLabel("日数");
-        plt.Axes.Bottom.Label.FontName = "Yu Gothic UI";
         plt.YLabel("累積消化数");
-        plt.Axes.Left.Label.FontName = "Yu Gothic UI";
         plt.Legend.IsVisible = true;
         plt.Legend.Alignment = Alignment.LowerRight;
         
