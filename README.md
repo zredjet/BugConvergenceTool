@@ -55,11 +55,15 @@
 dotnet build -c Release
 
 # 発行（単一実行ファイル）
-dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true
+dotnet publish BugConvergenceTool.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:IncludeNativeLibrariesForSelfExtract=true
 
 # 単体テスト
 dotnet test tests/BugConvergenceTool.Tests
 ```
+
+- 発行ではプロジェクトファイル（`BugConvergenceTool.csproj`）を指定してください。省略するとソリューションの単体テストプロジェクトまで単一ファイルで発行しようとして失敗します（NETSDK1098）。
+- 発行先（既定は `bin/Release/net10.0/win-x64/publish/`）には、実行ファイルと `Templates` フォルダ（結果 Excel のテンプレートと既定の設定ファイル）が出力されます。配布するときは `Templates` フォルダも実行ファイルと同じ場所に置いてください。
+- `IncludeNativeLibrariesForSelfExtract` を付けない場合は、グラフ描画用のネイティブライブラリ（Windows では `libSkiaSharp.dll`）が別ファイルとして出力されるため、これも一緒に配布してください。
 
 ## 使用方法
 
@@ -95,6 +99,8 @@ BugConvergenceTool <入力Excel> [オプション]
 - 乱数シードは設定ファイルの `Bootstrap.RandomSeed` で指定します（[ブートストラップ設定](#ブートストラップ設定configjson)）。
 
 ### 使用例
+
+`TestData.xlsx` は入力ファイルの例です。サンプルデータ入りの `Templates/Template.xlsx` をコピーして試せます（入力形式は[入力Excelの形式](#入力excelの形式)を参照）。
 
 ```bash
 # 基本的な使用法
