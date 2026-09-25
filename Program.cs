@@ -185,6 +185,9 @@ class Program
             CalculateIntervals(options, fitter, bestResult, tData, yData, testData.DayCount, seed);
         }
         
+        // 2.6. ★ の判定に使う「今後発見される件数」の予測区間（ブートストラップの区間がなければ Fisher 情報行列で求める）
+        fitter.EnsureRemainingBugsIntervalForAssessment(bestResult, ConfigurationService.Current.Bootstrap.ConfidenceLevel);
+        
         // 3. 結果表示
         PrintResults(results, bestResult, testData, options.Verbose);
         PrintConfidenceBand(bestResult);
@@ -540,7 +543,7 @@ class Program
     static void PrintConvergenceAssessment(TestData testData, FittingResult bestResult)
     {
         double currentFound = testData.CurrentCumulativeBugs;
-        var assessment = ConvergenceAssessment.Evaluate(currentFound, bestResult.EstimatedTotalBugs);
+        var assessment = ConvergenceAssessment.Evaluate(currentFound, bestResult);
 
         Console.WriteLine("\n=== 収束判断の目安 ===\n");
 
@@ -561,28 +564,32 @@ class Program
             Console.ResetColor();
         }
 
-        Console.WriteLine($"\n  現在の発見率: {ConvergenceAssessment.FormatRatio(assessment.Ratio)} ({currentFound:F0} / {bestResult.EstimatedTotalBugs:F1})");
+        Console.WriteLine($"\n  現在の発見率（点推定）: {ConvergenceAssessment.FormatRatio(assessment.Ratio)} ({currentFound:F0} / {bestResult.EstimatedTotalBugs:F1})");
+        if (assessment.ConservativeRatio.HasValue)
+            Console.WriteLine($"  現在の発見率（信頼下限）: {ConvergenceAssessment.FormatRatio(assessment.ConservativeRatio)}");
+        if (assessment.Basis != null)
+            Console.WriteLine($"  判定の根拠: {assessment.Basis}");
     }
     
     /// <summary>
     /// Fisher 情報行列による漸近信頼区間を計算（パラメータと推定潜在バグ総数）
     /// </summary>
+    /// <remarks>
+    /// 変化点 τ は尤度が τ について微分できないため固定する（τ を固定した条件付きの区間で、τ の不確実性は含まない）。
+    /// </remarks>
     static void CalculateFisherIntervals(FittingResult bestResult, double[] tData, double[] yData, double confidenceLevel)
     {
         var model = bestResult.Model!;
-        if (model.ParameterNames.Any(n => n.StartsWith("τ")))
-        {
-            Console.WriteLine("  Fisher情報行列: 変化点 τ は尤度が τ について微分できないため、変化点モデルでは計算しません。");
-            return;
-        }
-        
         var service = new FisherInformationService(confidenceLevel);
-        var fisher = service.CalculateNHPPStandardErrors(model, tData, yData, bestResult.ParameterVector);
+        var fisher = service.CalculateNHPPStandardErrors(
+            model, tData, yData, bestResult.ParameterVector, FisherInformationService.ChangePointMask(model));
         bestResult.FisherInformation = fisher;
         if (fisher.Success && fisher.CovarianceMatrix != null)
         {
             bestResult.TotalBugsFisherInterval = service.CalculateDerivedInterval(
                 model.GetAsymptoticTotalBugs, bestResult.ParameterVector, fisher.CovarianceMatrix, logScale: true);
+            if (model.ParameterNames.Any(n => n.StartsWith("τ")))
+                Console.WriteLine("  Fisher情報行列: 変化点 τ は尤度が τ について微分できないため固定して計算します（τ の不確実性は含みません）。");
         }
         else
         {
@@ -626,10 +633,17 @@ class Program
                 bestResult.ConfidenceBand = new ConfidenceIntervalService().Calculate(
                     model, bestResult.ParameterVector, bootstrap, times, level);
             }
+            // 予測区間は再推定なしで求まるので、--pi がなくても ★ の判定（今後発見される件数の上限）のために計算する
+            var predictionInterval = new PredictionIntervalService().Calculate(
+                model, tData, yData, bestResult.ParameterVector, bootstrap, horizon, level, seed);
             if (options.CalculatePredictionInterval)
             {
-                bestResult.PredictionInterval = new PredictionIntervalService().Calculate(
-                    model, tData, yData, bestResult.ParameterVector, bootstrap, horizon, level, seed);
+                bestResult.PredictionInterval = predictionInterval;
+            }
+            if (predictionInterval.RemainingBugs != null && predictionInterval.Succeeded > 0)
+            {
+                bestResult.RemainingBugsInterval = predictionInterval.RemainingBugs;
+                bestResult.RemainingBugsIntervalSource = $"ブートストラップ {level:P0}予測区間";
             }
         }
         else

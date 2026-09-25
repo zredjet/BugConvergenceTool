@@ -36,6 +36,21 @@ public class FittingResult
     /// Fisher 情報行列（デルタ法）による推定潜在バグ総数の信頼区間
     /// </summary>
     public Services.DerivedQuantityInterval? TotalBugsFisherInterval { get; set; }
+
+    /// <summary>
+    /// 規模パラメータ a が探索範囲の上限に張り付いているか（総数を推定できていない）
+    /// </summary>
+    public bool ScaleAtUpperBound { get; set; }
+
+    /// <summary>
+    /// 今後発見される件数の予測区間（★ の判定に使う。パラメータの不確実性と Poisson 変動を含む）
+    /// </summary>
+    public Services.IntervalEstimate? RemainingBugsInterval { get; set; }
+
+    /// <summary>
+    /// <see cref="RemainingBugsInterval"/> の求め方（表示用）
+    /// </summary>
+    public string? RemainingBugsIntervalSource { get; set; }
     
     /// <summary>
     /// パラメトリック・ブートストラップによる予測区間（--pi の場合）

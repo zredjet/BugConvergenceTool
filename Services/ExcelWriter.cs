@@ -269,9 +269,12 @@ public class ExcelWriter
         ws.Cell(convRow, 1).Value = "収束予測";
         ws.Cell(convRow, 1).Style.Font.Bold = true;
         
+        var assessment = ConvergenceAssessment.Evaluate(_testData.CurrentCumulativeBugs, bestResult);
         ws.Cell(convRow + 1, 1).Value = "現在の発見率";
-        ws.Cell(convRow + 1, 2).Value = ConvergenceAssessment.FormatRatio(
-            ConvergenceAssessment.Evaluate(_testData.CurrentCumulativeBugs, bestResult.EstimatedTotalBugs).Ratio);
+        ws.Cell(convRow + 1, 2).Value = ConvergenceAssessment.FormatRatio(assessment.Ratio) +
+            (assessment.ConservativeRatio.HasValue ? $"（信頼下限 {ConvergenceAssessment.FormatRatio(assessment.ConservativeRatio)}）" : "");
+        ws.Cell(convRow + 2, 1).Value = "収束判断";
+        ws.Cell(convRow + 2, 2).Value = $"{assessment.Stars} {assessment.Basis}";
         
         ws.Cell(convRow + 3, 1).Value = "マイルストーン";
         ws.Cell(convRow + 3, 2).Value = "予測日数";

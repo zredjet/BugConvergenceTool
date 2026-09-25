@@ -188,10 +188,12 @@ public class ReportGenerator
         sb.AppendLine();
         
         // 推定結果
-        var assessment = ConvergenceAssessment.Evaluate(cumulativeFound.Last(), bestResult.EstimatedTotalBugs);
+        var assessment = ConvergenceAssessment.Evaluate(cumulativeFound.Last(), bestResult);
         sb.AppendLine("  推定結果:");
         sb.AppendLine($"    {bestResult.Model?.TotalBugsLabel ?? "推定潜在バグ総数"}:   {bestResult.EstimatedTotalBugs:F1} 件");
-        sb.AppendLine($"    現在の発見率:       {ConvergenceAssessment.FormatRatio(assessment.Ratio)}");
+        sb.AppendLine($"    現在の発見率:       {ConvergenceAssessment.FormatRatio(assessment.Ratio)}（点推定）");
+        if (assessment.ConservativeRatio.HasValue)
+            sb.AppendLine($"                        {ConvergenceAssessment.FormatRatio(assessment.ConservativeRatio)}（信頼下限）");
         sb.AppendLine($"    残り推定バグ数:     {bestResult.EstimatedTotalBugs - cumulativeFound.Last():F1} 件");
         sb.AppendLine();
         
@@ -223,6 +225,10 @@ public class ReportGenerator
         
         sb.AppendLine("  収束状況の評価:");
         sb.AppendLine($"    {assessment.Stars} {assessment.Message}");
+        if (assessment.Basis != null)
+        {
+            sb.AppendLine($"    判定の根拠: {assessment.Basis}");
+        }
         if (assessment.Note != null)
         {
             sb.AppendLine($"    注意: {assessment.Note}");

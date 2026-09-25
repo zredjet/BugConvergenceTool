@@ -386,6 +386,7 @@ public class ModelFitter
 
             if (i == 0 && atUpper)
             {
+                result.ScaleAtUpperBound = true;
                 result.SelectionExclusionReason ??=
                     $"潜在バグ総数の規模 a が探索範囲の上限（{bound:F1}）に張り付いており、総数を推定できていません";
                 result.Warnings.Add(
@@ -605,6 +606,45 @@ public class ModelFitter
         var loss = LossFunctionFactory.GetForModel(_lossType, model, out _, out _);
         bool useProfileLikelihood = UseProfileLikelihoodForChangePoints;
         return y => Estimate(model, _tData, y, loss, allowParallel: false, useProfileLikelihood)?.Parameters;
+    }
+
+    /// <summary>
+    /// ★ の判定に使う「今後発見される件数」の予測区間を、ブートストラップの予測区間がなければ Fisher 情報行列で求める
+    /// </summary>
+    /// <remarks>
+    /// 期待値 r̂ = m(∞) - m(T) の対数の標準誤差をデルタ法で求め、Poisson(Λ)・ln Λ ~ N(ln r̂, s²) の混合の区間とする
+    /// （<see cref="ValidationUtility.PredictiveInterval"/>）。
+    /// Fisher 情報行列は発見数のみの Poisson-NHPP 尤度の最尤推定値でのみ有効（FRE・TEF・SSE では求めない）。変化点 τ は固定する。
+    /// 計算は安いので --pi を指定しなくても求める。
+    /// </remarks>
+    public void EnsureRemainingBugsIntervalForAssessment(FittingResult result, double confidenceLevel = 0.95)
+    {
+        if (!result.Success || result.Model == null || result.RemainingBugsInterval != null) return;
+        if (result.LossFunctionUsed != "MLE" || result.ComparisonGroup != ModelComparisonGroup.DetectionOnly) return;
+        try
+        {
+            var model = result.Model;
+            var p = result.ParameterVector;
+            double tEnd = _tData[^1];
+            double Remaining(double[] q) => model.GetAsymptoticTotalBugs(q) - model.Calculate(tEnd, q);
+            double expected = Remaining(p);
+            if (!(expected >= 0) || !double.IsFinite(expected)) return;
+            
+            var service = new FisherInformationService(confidenceLevel);
+            var fisher = service.CalculateNHPPStandardErrors(model, _tData, _yData, p, FisherInformationService.ChangePointMask(model));
+            if (!fisher.Success || fisher.CovarianceMatrix == null) return;
+            var interval = service.CalculateDerivedInterval(Remaining, p, fisher.CovarianceMatrix, logScale: true);
+            double logSe = interval.Estimate > 0 ? interval.StandardError / interval.Estimate : 0;
+            if (!double.IsFinite(logSe)) return;
+            
+            var (lower, upper, _) = ValidationUtility.PredictiveInterval(expected, logSe, 0, confidenceLevel);
+            result.RemainingBugsInterval = new IntervalEstimate(expected, lower, upper, result.ScaleAtUpperBound);
+            result.RemainingBugsIntervalSource = $"Fisher 情報行列による {confidenceLevel:P0}予測区間";
+        }
+        catch
+        {
+            // 区間を計算できなければ点推定で判定する
+        }
     }
 
     /// <summary>
