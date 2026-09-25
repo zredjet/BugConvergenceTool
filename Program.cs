@@ -258,7 +258,10 @@ class Program
         WarningService.PrintWarnings(warnings);
         
         // 4. 出力ディレクトリ作成
-        string outputDir = options.OutputDir ?? Path.GetDirectoryName(options.InputFile) ?? ".";
+        // 入力をファイル名だけで指定した場合、GetDirectoryName は null ではなく空文字列を返すため、
+        // 以前は Directory.CreateDirectory("") で例外になっていた
+        string? inputDir = Path.GetDirectoryName(options.InputFile);
+        string outputDir = options.OutputDir ?? (string.IsNullOrEmpty(inputDir) ? "." : inputDir);
         string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
         string outputBase = Path.Combine(outputDir, $"Result_{timestamp}");
         
