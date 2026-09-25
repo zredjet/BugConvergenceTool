@@ -145,7 +145,7 @@ class Program
             {
                 Console.WriteLine($"変化点の尤度比検定中（シミュレーション {options.LrtIterations} 回）...");
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                int tested = fitter.TestChangePoints(results, options.LrtIterations);
+                int tested = fitter.TestChangePoints(results, options.LrtIterations, ConfigurationService.Current.Bootstrap.RandomSeed);
                 Console.WriteLine(tested > 0
                     ? $"  {tested} モデルを検定しました（{stopwatch.Elapsed.TotalSeconds:F1}秒）"
                     : "  検定は不要でした（変化点モデルより AIC の小さい変化点なしのモデルがあるため）");
@@ -616,10 +616,14 @@ class Program
             Console.WriteLine("  ブートストラップ区間: 修正数データを同時に推定する FRE モデルには対応していないため省略します。");
         }
         
-        // Fisher 情報行列による漸近信頼区間（Poisson-NHPP の最尤推定値でのみ有効）
+        // Fisher 情報行列による漸近信頼区間（発見数のみの Poisson-NHPP 尤度の最尤推定値でのみ有効。
+        // FRE・TEF は修正数・工数を含む別の尤度で推定しているため、発見数だけのヘッセ行列では標準誤差にならない）
         if (options.CalculateConfidenceInterval && bestResult.LossFunctionUsed == "MLE")
         {
-            CalculateFisherIntervals(bestResult, tData, yData, level);
+            if (bestResult.ComparisonGroup == ModelComparisonGroup.DetectionOnly)
+                CalculateFisherIntervals(bestResult, tData, yData, level);
+            else
+                Console.WriteLine("  Fisher情報行列: 修正数・工数データを含む尤度で推定したモデルには対応していないため省略します。");
         }
     }
     
@@ -654,9 +658,7 @@ class Program
         Console.WriteLine("\n  収束予測日の区間:");
         foreach (var m in milestones)
         {
-            string FormatDay(double d) => double.IsPositiveInfinity(d) ? "到達せず" : $"{d:F1}日目";
-            string note = m.UnreachableFraction > 0 ? $"（{m.UnreachableFraction:P0} の反復で到達せず）" : "";
-            Console.WriteLine($"    {m.Ratio * 100:F0}%発見: {FormatDay(m.EstimateDay)}  [{FormatDay(m.LowerDay)}, {FormatDay(m.UpperDay)}]{note}");
+            Console.WriteLine($"    {IntervalFormatter.MilestoneLine(m)}");
         }
     }
     
@@ -671,12 +673,12 @@ class Program
         Console.WriteLine($"\n=== パラメータの信頼区間（Fisher情報行列、{bestResult.TotalBugsFisherInterval?.ConfidenceLevel ?? 0.95:P0}）===\n");
         for (int i = 0; i < fisher.ParameterNames.Length; i++)
         {
-            Console.WriteLine($"  {fisher.ParameterNames[i],-4} = {fisher.Parameters[i],10:G5}  SE={fisher.StandardErrors[i],10:G4}  [{fisher.LowerBounds[i]:G5}, {fisher.UpperBounds[i]:G5}]");
+            Console.WriteLine($"  {IntervalFormatter.FisherParameterLine(fisher, i)}");
         }
         var total = bestResult.TotalBugsFisherInterval;
         if (total != null && total.IsValid)
         {
-            Console.WriteLine($"\n  推定潜在バグ総数: {total.Estimate:F1} 件  [{total.Lower:F1}, {total.Upper:F1}]（デルタ法・対数スケール）");
+            Console.WriteLine($"\n  {IntervalFormatter.FisherTotalBugsLine(total)}");
         }
         Console.WriteLine("  ※ 漸近近似。パラメータが探索範囲の境界にある場合やデータが少ない場合は不正確です。");
     }
@@ -955,7 +957,7 @@ class Program
         Console.WriteLine("信頼区間オプション:");
         Console.WriteLine("  --ci, --confidence-interval");
         Console.WriteLine("                        95%信頼区間を計算（ブートストラップ法）");
-        Console.WriteLine("  --bootstrap N         ブートストラップ反復回数（デフォルト: 200）");
+        Console.WriteLine("  --bootstrap N         ブートストラップ反復回数（デフォルト: 設定ファイルの Bootstrap.Iterations = 200）");
         Console.WriteLine();
         Console.WriteLine("推定・検証オプション:");
         Console.WriteLine("  --loss TYPE           損失関数を指定:");
@@ -1017,7 +1019,8 @@ class CommandOptions
     
     // 信頼区間オプション
     public bool CalculateConfidenceInterval { get; set; } = false;
-    public int BootstrapIterations { get; set; } = 200;
+    // ブートストラップ反復回数（0 なら設定ファイルの Bootstrap.Iterations を使う）
+    public int BootstrapIterations { get; set; } = 0;
     
     // 損失関数オプション
     public LossType LossFunction { get; set; } = LossType.Mle;

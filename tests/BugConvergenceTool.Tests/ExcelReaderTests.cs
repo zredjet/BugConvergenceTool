@@ -59,6 +59,25 @@ public class ExcelReaderTests : IDisposable
     }
 
     [Fact]
+    public void FormulaCellsReturningEmptyString_AreTreatedAsBlank()
+    {
+        // =IF(...,"") のように空文字を返す数式を未来の日まで入れたシートでも、未来の日を観測日としない
+        var found = Enumerable.Range(0, 12).Select(i => (double?)(8 - i / 2)).ToArray();
+        CreateSheet(new DateTime(2025, 1, 6), found, plannedOnlyDays: 6);
+        using (var workbook = new XLWorkbook(_path))
+        {
+            var ws = workbook.Worksheet("データ入力");
+            for (int col = 14; col < 14 + 6; col++)
+                ws.Cell(9, col).FormulaA1 = "IF(TRUE,\"\",1)";
+            workbook.Save();
+        }
+
+        var data = new ExcelReader().ReadFromExcel(_path);
+
+        Assert.Equal(12, data.DayCount);
+    }
+
+    [Fact]
     public void BlankBugCountInsideObservedPeriod_IsZeroWithWarning()
     {
         var found = new double?[] { 5, 4, null, 3, 2, 2 };

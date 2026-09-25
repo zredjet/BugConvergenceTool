@@ -71,8 +71,6 @@ public sealed class PredictionIntervalResult
 /// </remarks>
 public class PredictionIntervalService
 {
-    /// <summary>マイルストーンを探す最大日数</summary>
-    private const double MaxSearchDay = 1e5;
 
     /// <summary>区間を求める収束マイルストーン（発見率）</summary>
     public static readonly double[] MilestoneRatios = { 0.90, 0.95, 0.99 };
@@ -110,7 +108,9 @@ public class PredictionIntervalService
         var futureTimes = Enumerable.Range(1, horizonDays).Select(d => tEnd + d).ToArray();
 
         // 将来の累積発見数の経路 [反復][日]
-        int baseSeed = seed ?? Random.Shared.Next();
+        // シード指定時もブートストラップ（ParametricBootstrap.Run）の合成データ生成と同じ乱数列にならないよう、
+        // シードを別の系列に写す（同じ列を使うと θ* と将来の Poisson 変動が相関する）
+        int baseSeed = seed.HasValue ? unchecked(seed.Value * -1640531535 + 0x5bd1e995) : Random.Shared.Next();
         var paths = new double[replicates.Count][];
         var remaining = new double[replicates.Count];
         Parallel.For(0, replicates.Count, r =>
@@ -178,11 +178,11 @@ public class PredictionIntervalService
         double ratio, double qLow, double qHigh)
     {
         // 到達しない反復は +∞ として分位点に含める（除外すると区間が楽観側に偏る）
-        var days = replicates.Select(p => DayForRatio(model, p, ratio)).OrderBy(v => v).ToList();
+        var days = replicates.Select(p => model.DayForRatio(ratio, p)).OrderBy(v => v).ToList();
         double unreachable = days.Count(double.IsPositiveInfinity) / (double)days.Count;
         return new MilestoneInterval(
             ratio,
-            DayForRatio(model, estimate, ratio),
+            model.DayForRatio(ratio, estimate),
             QuantileWithInfinity(days, qLow),
             QuantileWithInfinity(days, qHigh),
             unreachable);
@@ -197,27 +197,5 @@ public class PredictionIntervalService
         int hi = Math.Min((int)Math.Ceiling(pos), sortedDays.Count - 1);
         if (double.IsPositiveInfinity(sortedDays[hi])) return double.PositiveInfinity;
         return ParametricBootstrap.Percentile(sortedDays, q);
-    }
-
-    /// <summary>
-    /// m(t) = ratio × m(∞) となる日（t=0 から二分法）。到達しなければ +∞
-    /// </summary>
-    public static double DayForRatio(ReliabilityGrowthModelBase model, double[] parameters, double ratio)
-    {
-        double target = model.GetAsymptoticTotalBugs(parameters) * ratio;
-        if (!double.IsFinite(target) || target <= 0) return double.PositiveInfinity;
-
-        double lo = 0, hi = 1;
-        while (model.Calculate(hi, parameters) < target)
-        {
-            hi *= 2;
-            if (hi > MaxSearchDay) return double.PositiveInfinity;
-        }
-        for (int i = 0; i < 100 && hi - lo > 1e-6; i++)
-        {
-            double mid = (lo + hi) / 2;
-            if (model.Calculate(mid, parameters) < target) lo = mid; else hi = mid;
-        }
-        return (lo + hi) / 2;
     }
 }

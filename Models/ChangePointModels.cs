@@ -27,11 +27,6 @@ public abstract class ChangePointModelBase : ReliabilityGrowthModelBase
     public override string Category => "変化点";
     
     /// <summary>
-    /// 変化点τ
-    /// </summary>
-    public double ChangePoint { get; protected set; }
-    
-    /// <summary>
     /// 変化点なしの対応モデル（尤度比検定の帰無モデル）。b₁ = b₂ のときこのモデルに一致する
     /// </summary>
     public abstract ReliabilityGrowthModelBase CreateNullModel();
@@ -256,10 +251,10 @@ public class MultipleChangePointModel : ChangePointModelBase
         double segStart = 0;
         for (int i = 0; i < numSegments; i++)
         {
+            if (t <= segStart) break;
             double segEnd = i < _numChangePoints ? tau[i] : double.PositiveInfinity;
-            double dt = Math.Min(t, segEnd) - segStart;
-            if (dt <= 0) break;
-            u += p[1 + i] * dt;
+            // 変化点が等しい（長さ 0 の区間）場合も打ち切らず次の区間へ進む
+            u += p[1 + i] * (Math.Min(t, segEnd) - segStart);
             segStart = segEnd;
         }
         
@@ -371,88 +366,6 @@ public sealed class FixedTauChangePointModel : ReliabilityGrowthModelBase
     }
 }
 
-
-/// <summary>
-/// 変化点検出ユーティリティ
-/// </summary>
-public static class ChangePointDetector
-{
-    /// <summary>
-    /// データから変化点候補を検出（傾き変化に基づく）
-    /// </summary>
-    public static List<int> DetectCandidates(double[] yData, int windowSize = 5)
-    {
-        var candidates = new List<int>();
-        int n = yData.Length;
-        
-        if (n < windowSize * 2 + 1)
-            return candidates;
-        
-        // 各点で前後の傾きを比較
-        for (int i = windowSize; i < n - windowSize; i++)
-        {
-            // 前の傾き
-            double slopeBefore = (yData[i] - yData[i - windowSize]) / windowSize;
-            // 後の傾き
-            double slopeAfter = (yData[i + windowSize] - yData[i]) / windowSize;
-            
-            // 傾きの変化率
-            double change = Math.Abs(slopeAfter - slopeBefore) / Math.Max(0.1, Math.Abs(slopeBefore));
-            
-            // 変化が大きい点を候補とする
-            if (change > 0.3)
-            {
-                candidates.Add(i);
-            }
-        }
-        
-        // 近接する候補を統合
-        var filtered = new List<int>();
-        foreach (var c in candidates)
-        {
-            if (filtered.Count == 0 || c - filtered.Last() > windowSize)
-            {
-                filtered.Add(c);
-            }
-        }
-        
-        return filtered;
-    }
-    
-    /// <summary>
-    /// グリッドサーチで最適変化点を探索
-    /// </summary>
-    public static double FindOptimalChangePoint(
-        ReliabilityGrowthModelBase model,
-        double[] tData,
-        double[] yData,
-        int tauIndex,
-        double[] otherParams)
-    {
-        int n = tData.Length;
-        double bestTau = n / 2.0;
-        double bestSSE = double.MaxValue;
-        
-        for (int t = 3; t < n - 3; t++)
-        {
-            var testParams = (double[])otherParams.Clone();
-            testParams[tauIndex] = t;
-            
-            try
-            {
-                double sse = model.CalculateSSE(tData, yData, testParams);
-                if (sse < bestSSE)
-                {
-                    bestSSE = sse;
-                    bestTau = t;
-                }
-            }
-            catch { }
-        }
-        
-        return bestTau;
-    }
-}
 
 /// <summary>
 /// 変化点モデルのファクトリ

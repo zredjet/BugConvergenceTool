@@ -336,12 +336,12 @@ public class ReportGenerator
             sb.AppendLine();
             for (int i = 0; i < fisher.ParameterNames.Length; i++)
             {
-                sb.AppendLine($"  {fisher.ParameterNames[i],-4} = {fisher.Parameters[i],10:G5}  SE={fisher.StandardErrors[i],10:G4}  [{fisher.LowerBounds[i]:G5}, {fisher.UpperBounds[i]:G5}]");
+                sb.AppendLine($"  {IntervalFormatter.FisherParameterLine(fisher, i)}");
             }
             var total = bestResult.TotalBugsFisherInterval;
             if (total != null && total.IsValid)
             {
-                sb.AppendLine($"  推定潜在バグ総数: {total.Estimate:F1} 件  {total.ConfidenceLevel:P0}区間 [{total.Lower:F1}, {total.Upper:F1}]（デルタ法・対数スケール）");
+                sb.AppendLine($"  {IntervalFormatter.FisherTotalBugsLine(total)}");
             }
             sb.AppendLine("  ※ 漸近近似。パラメータが探索範囲の境界にある場合やデータが少ない場合は不正確です。");
             sb.AppendLine();
@@ -389,9 +389,7 @@ public class ReportGenerator
         sb.AppendLine("  収束予測日の区間:");
         foreach (var m in milestones)
         {
-            string FormatDay(double d) => double.IsPositiveInfinity(d) ? "到達せず" : $"{d:F1}日目";
-            string note = m.UnreachableFraction > 0 ? $"（{m.UnreachableFraction:P0} の反復で到達せず）" : "";
-            sb.AppendLine($"    {m.Ratio * 100:F0}%発見: {FormatDay(m.EstimateDay)}  [{FormatDay(m.LowerDay)}, {FormatDay(m.UpperDay)}]{note}");
+            sb.AppendLine($"    {IntervalFormatter.MilestoneLine(m)}");
         }
     }
     

@@ -12,18 +12,14 @@ public class GridSearchGradientOptimizer : IOptimizer
     
     private readonly int _gridSize;
     private readonly int _maxIterations;
-    // learningRate / delta は旧実装（固定学習率・固定差分幅の勾配降下）の設定。
-    // 現在は正規化空間で歩幅を自動調整するため使用しない（設定ファイルとの互換性のため受け取る）
-    private readonly double _learningRate;
-    private readonly double _delta;
     
     /// <summary>
     /// コンストラクタ
     /// </summary>
-    /// <param name="gridSize">グリッドサイズ（デフォルト: 自動）</param>
-    /// <param name="maxIterations">勾配降下法の最大反復回数</param>
-    /// <param name="learningRate">学習率</param>
-    /// <param name="delta">数値微分のデルタ</param>
+    /// <param name="gridSize">グリッドサイズ（0 なら次元数に応じて自動）</param>
+    /// <param name="maxIterations">勾配降下の最大反復回数</param>
+    /// <param name="learningRate">未使用（旧実装の固定学習率。設定ファイルとの互換性のため受け取る）</param>
+    /// <param name="delta">未使用（旧実装の固定差分幅。設定ファイルとの互換性のため受け取る）</param>
     public GridSearchGradientOptimizer(
         int gridSize = 0,
         int maxIterations = 2000,
@@ -32,8 +28,6 @@ public class GridSearchGradientOptimizer : IOptimizer
     {
         _gridSize = gridSize;
         _maxIterations = maxIterations;
-        _learningRate = learningRate;
-        _delta = delta;
     }
     
     public OptimizationResult Optimize(

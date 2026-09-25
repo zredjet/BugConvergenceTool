@@ -416,44 +416,31 @@ public abstract class ReliabilityGrowthModelBase
     }
     
     /// <summary>
-    /// 指定割合に到達する日を予測
+    /// m(t) = ratio × m(∞) となる日（t=0 から二分法）。到達しなければ +∞
     /// </summary>
-    public double? PredictDayForRatio(double ratio, double[] parameters, int currentDay)
+    /// <remarks>
+    /// 収束予測・予測区間・モデル平均化で共通に使う。以前は収束予測だけ別実装（現在日から探索し、
+    /// モデル上すでに到達していると null を返す）で、観測値が未到達・モデル値が到達済みのとき「予測不可」と表示されていた。
+    /// </remarks>
+    public double DayForRatio(double ratio, double[] parameters)
     {
-        double totalBugs = GetAsymptoticTotalBugs(parameters);
-        double target = totalBugs * ratio;
-        double currentValue = Calculate(currentDay, parameters);
+        double target = GetAsymptoticTotalBugs(parameters) * ratio;
+        if (!double.IsFinite(target) || target <= 0) return double.PositiveInfinity;
         
-        // 既に到達済み
-        if (currentValue >= target)
-            return null;
-        
-        // 二分法で探索
-        double tLow = currentDay;
-        double tHigh = currentDay * 10;
-        
-        // 上限を拡大
-        while (Calculate(tHigh, parameters) < target && tHigh < 10000)
-            tHigh *= 2;
-        
-        if (Calculate(tHigh, parameters) < target)
-            return double.PositiveInfinity;
-        
-        // 二分法
-        for (int i = 0; i < 100; i++)
+        double lo = 0, hi = 1;
+        while (Calculate(hi, parameters) < target)
         {
-            double tMid = (tLow + tHigh) / 2;
-            double valMid = Calculate(tMid, parameters);
-            
-            if (Math.Abs(valMid - target) < 0.01)
-                return tMid;
-            
-            if (valMid < target)
-                tLow = tMid;
-            else
-                tHigh = tMid;
+            hi *= 2;
+            if (hi > MaxMilestoneSearchDay) return double.PositiveInfinity;
         }
-        
-        return (tLow + tHigh) / 2;
+        for (int i = 0; i < 100 && hi - lo > 1e-6; i++)
+        {
+            double mid = (lo + hi) / 2;
+            if (Calculate(mid, parameters) < target) lo = mid; else hi = mid;
+        }
+        return (lo + hi) / 2;
     }
+    
+    /// <summary>マイルストーン到達日を探す最大日数</summary>
+    private const double MaxMilestoneSearchDay = 1e5;
 }

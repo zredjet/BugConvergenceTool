@@ -114,7 +114,7 @@ public class UncertaintyTests
     {
         var p = new[] { 150.0, 0.05 };
         foreach (double r in new[] { 0.9, 0.95, 0.99 })
-            Assert.Equal(-Math.Log(1 - r) / 0.05, PredictionIntervalService.DayForRatio(new ExponentialModel(), p, r), 4);
+            Assert.Equal(-Math.Log(1 - r) / 0.05, new ExponentialModel().DayForRatio(r, p), 4);
     }
 
     [Fact]

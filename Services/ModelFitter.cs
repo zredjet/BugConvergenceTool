@@ -81,6 +81,14 @@ public class ModelFitter
     /// </remarks>
     public FittingResult FitModel(ReliabilityGrowthModelBase model)
     {
+        return FitModel(model, UseProfileLikelihoodForChangePoints);
+    }
+    
+    /// <summary>
+    /// 指定モデルでフィッティングを実行（変化点モデルにプロファイル尤度法を使うかを指定）
+    /// </summary>
+    private FittingResult FitModel(ReliabilityGrowthModelBase model, bool useProfileLikelihood)
+    {
         var result = new FittingResult
         {
             ModelName = model.Name,
@@ -132,7 +140,7 @@ public class ModelFitter
             // パラメータ推定（最終結果は常に全データで推定する。
             // ホールドアウト検証用の推定は PerformHoldoutValidation で訓練区間のみを使って別に行う）
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            var estimation = Estimate(model, _tData, _yData, lossFunction, allowParallel: true);
+            var estimation = Estimate(model, _tData, _yData, lossFunction, allowParallel: true, useProfileLikelihood);
             stopwatch.Stop();
 
             if (estimation == null)
@@ -171,7 +179,7 @@ public class ModelFitter
                 }
             }
 
-            CompleteResult(model, estimation.Parameters, lossFunction, result);
+            CompleteResult(model, estimation.Parameters, lossFunction, result, useProfileLikelihood);
             result.Success = true;
         }
         catch (Exception ex)
@@ -188,23 +196,15 @@ public class ModelFitter
     /// </summary>
     public FittingResult FitChangePointModel(ChangePointModelBase changePointModel, bool useRobustDetection = true)
     {
-        bool previous = UseProfileLikelihoodForChangePoints;
-        UseProfileLikelihoodForChangePoints = useRobustDetection;
-        try
-        {
-            return FitModel(changePointModel);
-        }
-        finally
-        {
-            UseProfileLikelihoodForChangePoints = previous;
-        }
+        // 共有の設定（UseProfileLikelihoodForChangePoints）を書き換えず、この推定だけに指定する
+        return FitModel(changePointModel, useRobustDetection);
     }
 
     /// <summary>
     /// 推定したパラメータから適合度・AIC・ホールドアウト・収束予測などを計算して結果に格納する
     /// </summary>
     private void CompleteResult(
-        ReliabilityGrowthModelBase model, double[] parameters, ILossFunction lossFunction, FittingResult result)
+        ReliabilityGrowthModelBase model, double[] parameters, ILossFunction lossFunction, FittingResult result, bool useProfileLikelihood)
     {
         // パラメータを結果に格納
         for (int i = 0; i < model.ParameterNames.Length && i < parameters.Length; i++)
@@ -262,7 +262,7 @@ public class ModelFitter
         // ホールドアウト検証（訓練区間のみで別途推定）
         if (_splitResult != null && _splitResult.IsValid)
         {
-            PerformHoldoutValidation(model, lossFunction, result);
+            PerformHoldoutValidation(model, lossFunction, result, useProfileLikelihood);
         }
 
         // 収束予測を計算
@@ -283,6 +283,8 @@ public class ModelFitter
         
         var model = result.Model;
         var loss = LossFunctionFactory.GetForModel(_lossType, model, out _, out _);
+        // 元の推定と同じ手順で推定し直す（プロファイル尤度法を使ったかは変化点探索結果の有無でわかる）
+        bool useProfileLikelihood = result.ChangePointSearchResult != null;
         var points = new StabilityPoint[k];
         Parallel.For(1, k + 1, removed =>
         {
@@ -292,7 +294,7 @@ public class ModelFitter
             bool atUpper = false;
             try
             {
-                var p = Estimate(model, t, y, loss, allowParallel: false)?.Parameters;
+                var p = Estimate(model, t, y, loss, allowParallel: false, useProfileLikelihood)?.Parameters;
                 if (p != null)
                 {
                     total = model.GetAsymptoticTotalBugs(p);
@@ -407,11 +409,11 @@ public class ModelFitter
     /// 訓練区間のみでパラメータを推定し直し、ホールドアウト期間の発見数（増分）を予測して評価する。
     /// ここで得たパラメータは検証専用で、最終結果（全データで推定）には使わない。
     /// </remarks>
-    private void PerformHoldoutValidation(ReliabilityGrowthModelBase model, ILossFunction lossFunction, FittingResult result)
+    private void PerformHoldoutValidation(ReliabilityGrowthModelBase model, ILossFunction lossFunction, FittingResult result, bool useProfileLikelihood)
     {
         if (_splitResult == null || !_splitResult.IsValid) return;
 
-        var trainParameters = Estimate(model, _splitResult.TrainTimes, _splitResult.TrainValues, lossFunction, allowParallel: true)?.Parameters;
+        var trainParameters = Estimate(model, _splitResult.TrainTimes, _splitResult.TrainValues, lossFunction, allowParallel: true, useProfileLikelihood)?.Parameters;
         if (trainParameters == null)
         {
             result.Warnings.Add("ホールドアウト検証: 訓練区間でのパラメータ推定に失敗したため、検証できませんでした。");
@@ -526,12 +528,14 @@ public class ModelFitter
             nullModel = nullResult.Model!;
 
             var loss = LossFunctionFactory.Create(_lossType);
+            // 観測データと同じ推定手順で推定し直す（プロファイル尤度法を使ったかは変化点探索結果の有無でわかる）
+            bool useProfileLikelihood = result.ChangePointSearchResult != null;
             var service = new ChangePointLRTService(simulations, seed, _verbose);
             var test = service.Test(
                 _tData, _yData, nullModel, changePointModel,
                 nullResult.ParameterVector, result.ParameterVector,
-                y => Estimate(nullModel, _tData, y, loss, allowParallel: false)?.Parameters,
-                y => Estimate(changePointModel, _tData, y, loss, allowParallel: false)?.Parameters);
+                y => Estimate(nullModel, _tData, y, loss, allowParallel: false, useProfileLikelihood)?.Parameters,
+                y => Estimate(changePointModel, _tData, y, loss, allowParallel: false, useProfileLikelihood)?.Parameters);
 
             result.ChangePointTest = test;
             if (!test.Success)
@@ -559,7 +563,8 @@ public class ModelFitter
     public Func<double[], double[]?> CreateRefitFunction(ReliabilityGrowthModelBase model)
     {
         var loss = LossFunctionFactory.GetForModel(_lossType, model, out _, out _);
-        return y => Estimate(model, _tData, y, loss, allowParallel: false)?.Parameters;
+        bool useProfileLikelihood = UseProfileLikelihoodForChangePoints;
+        return y => Estimate(model, _tData, y, loss, allowParallel: false, useProfileLikelihood)?.Parameters;
     }
 
     /// <summary>
@@ -572,14 +577,16 @@ public class ModelFitter
     /// パラメータ推定（変化点モデルはプロファイル尤度法、それ以外は選択された最適化手法）
     /// </summary>
     /// <param name="allowParallel">内部で並列化するか（外側で並列実行している場合は false）</param>
+    /// <param name="useProfileLikelihood">τ を1つ持つ変化点モデルをプロファイル尤度法で推定するか</param>
     private EstimationOutcome? Estimate(
         ReliabilityGrowthModelBase model,
         double[] tData,
         double[] yData,
         ILossFunction lossFunction,
-        bool allowParallel)
+        bool allowParallel,
+        bool useProfileLikelihood)
     {
-        if (UseProfileLikelihoodForChangePoints
+        if (useProfileLikelihood
             && model is ChangePointModelBase changePointModel
             && FixedTauChangePointModel.Supports(changePointModel))
         {
@@ -702,14 +709,15 @@ public class ModelFitter
             }
             else
             {
-                var predictedDay = model.PredictDayForRatio(ratio, parameters, currentDay);
+                // 観測値は未到達でも、モデル上はすでに到達している（到達日 ≤ 現在日）ことがある。
+                // その場合も到達日を示し、残り日数は 0 とする
+                double predictedDay = model.DayForRatio(ratio, parameters);
 
-                if (predictedDay.HasValue && !double.IsInfinity(predictedDay.Value))
+                if (double.IsFinite(predictedDay))
                 {
-                    prediction.PredictedDay = predictedDay.Value;
-                    prediction.RemainingDays = predictedDay.Value - currentDay;
-
-                    prediction.PredictedDate = _testData.DateForDay(predictedDay.Value);
+                    prediction.PredictedDay = predictedDay;
+                    prediction.RemainingDays = Math.Max(0, predictedDay - currentDay);
+                    prediction.PredictedDate = _testData.DateForDay(predictedDay);
                 }
             }
 

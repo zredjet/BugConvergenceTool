@@ -68,6 +68,22 @@ public class ExcelWriter
         }
     }
     
+    /// <summary>
+    /// 発見率の欄の値（b がないモデルは変化点前の b₁。どちらもなければ "-"）
+    /// </summary>
+    /// <remarks>
+    /// 以前は Parameters["b"] を既定値 0 で読んでいたため、変化点モデルなどでは b=0 と表示されていた。
+    /// </remarks>
+    private static XLCellValue DetectionRateCell(FittingResult result)
+    {
+        foreach (var name in new[] { "b", "b₁", "b1" })
+        {
+            if (result.Parameters.TryGetValue(name, out double value))
+                return value;
+        }
+        return "-";
+    }
+    
     private void WriteModelSheet(XLWorkbook workbook, List<FittingResult> results, FittingResult bestResult)
     {
         var ws = workbook.Worksheet("モデル選択");
@@ -75,7 +91,7 @@ public class ExcelWriter
         // 選択モデルの結果
         ws.Cell("B14").Value = bestResult.ModelName;
         ws.Cell("B15").Value = bestResult.Parameters.GetValueOrDefault("a", 0);
-        ws.Cell("B16").Value = bestResult.Parameters.GetValueOrDefault("b", 0);
+        ws.Cell("B16").Value = DetectionRateCell(bestResult);
         ws.Cell("B17").Value = bestResult.Parameters.ContainsKey("c") 
             ? bestResult.Parameters["c"].ToString("F4") : "-";
         ws.Cell("B18").Value = "-";  // 旧「不完全デバッグ率」欄（該当モデルは削除済み）
@@ -87,7 +103,7 @@ public class ExcelWriter
         
         // 推定結果
         ws.Cell("B25").Value = bestResult.EstimatedTotalBugs;
-        ws.Cell("B26").Value = bestResult.Parameters.GetValueOrDefault("b", 0);
+        ws.Cell("B26").Value = DetectionRateCell(bestResult);
         ws.Cell("B27").Value = bestResult.EstimatedTotalBugs - _testData.CurrentCumulativeBugs;
         
         // モデル比較結果（行30から）

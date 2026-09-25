@@ -127,7 +127,7 @@ internal static class TestHelpers
     /// <summary>
     /// W(∞)=∞ の TEF を使うモデルか（t を大きくしても m(t) が漸近値に近づくのが極めて遅い）
     /// </summary>
-    public static bool UsesInfiniteEffort(ReliabilityGrowthModelBase model, double[] parameters)
+    public static bool UsesInfiniteEffort(ReliabilityGrowthModelBase model)
     {
         return model is TEFBasedModelBase && model.Name.Contains("べき乗則TEF");
     }

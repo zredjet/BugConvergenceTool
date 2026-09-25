@@ -46,7 +46,7 @@ public class ExcelReader
         int dataCount = 0;
         for (int i = 0; i < dateCount; i++)
         {
-            if (!worksheet.Cell(9, i + 2).IsEmpty())
+            if (!IsBlank(worksheet.Cell(9, i + 2)))
                 dataCount = i + 1;
         }
         if (dataCount < dateCount)
@@ -82,7 +82,7 @@ public class ExcelReader
             data.ActualDaily.Add(GetCellValue(worksheet, 8, currentCol));
             
             // バグ発生件数（日次） - 行9（観測期間内の空欄は 0 件として扱い、注意を出す）
-            if (worksheet.Cell(9, currentCol).IsEmpty())
+            if (IsBlank(worksheet.Cell(9, currentCol)))
                 blankFoundDays.Add(data.Dates[^1]);
             data.BugsFoundDaily.Add(GetCellValue(worksheet, 9, currentCol));
             
@@ -100,6 +100,23 @@ public class ExcelReader
         }
         
         return data;
+    }
+    
+    /// <summary>
+    /// 未入力のセルか（空のセルに加え、`=IF(...,"")` のように空文字を返す数式セルも未入力とみなす）
+    /// </summary>
+    private static bool IsBlank(IXLCell cell)
+    {
+        if (cell.IsEmpty()) return true;
+        try
+        {
+            return string.IsNullOrWhiteSpace(cell.GetString());
+        }
+        catch
+        {
+            // 評価できない数式は入力ありとして扱う（値は GetCellValue で 0 になる）
+            return false;
+        }
     }
     
     private double GetCellValue(IXLWorksheet worksheet, int row, int col)

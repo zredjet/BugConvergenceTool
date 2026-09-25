@@ -185,61 +185,59 @@ public class GoodnessOfFitTest
     }
 
     /// <summary>
-    /// Kolmogorov-Smirnov検定（変換時間ベース）
-    /// NHPPの場合、累積強度関数で変換した時間が一様分布に従う
+    /// Kolmogorov-Smirnov 検定（発見時刻を U = m(t)/m(T) で変換した値が一様分布に従うか）
     /// </summary>
-    /// <param name="model">信頼度成長モデル</param>
-    /// <param name="tData">時刻データ</param>
-    /// <param name="yData">累積バグ発見数</param>
-    /// <param name="parameters">モデルパラメータ</param>
-    /// <returns>(D統計量, p値)</returns>
     public (double statistic, double pValue) KolmogorovSmirnovTest(
         ReliabilityGrowthModelBase model,
         double[] tData,
         double[] yData,
         double[] parameters)
     {
-        // 累積強度関数 M(t) = m(t) で変換
-        // バグ発生時刻を抽出し、U_i = M(t_i) / M(T) が一様(0,1)に従う
-        
-        var bugTimes = ExtractBugOccurrenceTimes(tData, yData);
-        int n = bugTimes.Length;
-        
-        if (n < 5)
+        var u = TransformedBugTimes(model, tData, yData, parameters);
+        if (u == null)
             return (0, 1.0);  // サンプル不足
         
+        double maxD = KolmogorovSmirnovStatistic(u);
+        return (maxD, CalculateKsPValue(maxD, u.Length));
+    }
+    
+    /// <summary>
+    /// 発見時刻を U = m(t)/m(T) で変換して昇順に並べた値（件数が 5 未満、または m(T) ≤ 0 なら null）
+    /// </summary>
+    private static double[]? TransformedBugTimes(
+        ReliabilityGrowthModelBase model, double[] tData, double[] yData, double[] parameters)
+    {
+        var bugTimes = ExtractBugOccurrenceTimes(tData, yData);
+        if (bugTimes.Length < 5)
+            return null;
+        
         double totalIntensity = model.Calculate(tData[^1], parameters);
-        
         if (totalIntensity <= 0)
-            return (0, 1.0);
+            return null;
         
-        // 変換時間 U_i = M(t_i) / M(T)
-        var transformedTimes = bugTimes
+        return bugTimes
             .Select(t => model.Calculate(t, parameters) / totalIntensity)
             .OrderBy(u => u)
             .ToArray();
-        
-        // KS統計量 D = max |F_n(x) - F(x)|
+    }
+    
+    /// <summary>
+    /// KS 統計量 D = max |Fₙ(u) - u|（U は昇順）
+    /// </summary>
+    private static double KolmogorovSmirnovStatistic(double[] sortedUniform)
+    {
+        int n = sortedUniform.Length;
         double maxD = 0;
         for (int i = 0; i < n; i++)
         {
-            double empiricalCdf = (i + 1.0) / n;
-            double theoreticalCdf = transformedTimes[i];
-            
-            // D+ = max(F_n - F)
-            double d1 = Math.Abs(empiricalCdf - theoreticalCdf);
-            // D- = max(F - F_{n-1})
+            double theoreticalCdf = sortedUniform[i];
+            double d1 = Math.Abs((i + 1.0) / n - theoreticalCdf);
             double d2 = Math.Abs((double)i / n - theoreticalCdf);
-            
             maxD = Math.Max(maxD, Math.Max(d1, d2));
         }
-        
-        // p値の計算（Kolmogorov分布の漸近近似）
-        double pValue = CalculateKsPValue(maxD, n);
-        
-        return (maxD, pValue);
+        return maxD;
     }
-
+    
     /// <summary>
     /// KS検定のp値を計算（Kolmogorov分布の近似）
     /// </summary>
@@ -264,46 +262,23 @@ public class GoodnessOfFitTest
     }
 
     /// <summary>
-    /// Cramer-von Mises検定（変換時間ベース）
-    /// KS検定より検出力が高い場合がある
+    /// Cramér-von Mises 検定（発見時刻を U = m(t)/m(T) で変換した値が一様分布に従うか）
     /// </summary>
-    /// <param name="model">信頼度成長モデル</param>
-    /// <param name="tData">時刻データ</param>
-    /// <param name="yData">累積バグ発見数</param>
-    /// <param name="parameters">モデルパラメータ</param>
-    /// <returns>(W²統計量, p値)</returns>
     public (double statistic, double pValue) CramerVonMisesTest(
         ReliabilityGrowthModelBase model,
         double[] tData,
         double[] yData,
         double[] parameters)
     {
-        var bugTimes = ExtractBugOccurrenceTimes(tData, yData);
-        int n = bugTimes.Length;
-        
-        if (n < 5)
+        var u = TransformedBugTimes(model, tData, yData, parameters);
+        if (u == null)
             return (0, 1.0);
-        
-        double totalIntensity = model.Calculate(tData[^1], parameters);
-        
-        if (totalIntensity <= 0)
-            return (0, 1.0);
-        
-        // 変換時間
-        var transformedTimes = bugTimes
-            .Select(t => model.Calculate(t, parameters) / totalIntensity)
-            .OrderBy(u => u)
-            .ToArray();
-        
-        // Cramer-von Mises統計量
-        double W2 = CramerVonMisesStatistic(transformedTimes);
         
         // p値: 変換後の値が一様分布に従う（分布が完全に指定された Case 0）ときの W² の分布から求める
-        double pValue = CalculateCvMPValue(W2, n);
-        
-        return (W2, pValue);
+        double W2 = CramerVonMisesStatistic(u);
+        return (W2, CalculateCvMPValue(W2, u.Length));
     }
-
+    
     /// <summary>
     /// Cramér-von Mises 統計量 W² = 1/(12n) + Σ(U₍ᵢ₎ - (2i-1)/(2n))²（U は昇順）
     /// </summary>
@@ -320,7 +295,8 @@ public class GoodnessOfFitTest
     }
     
     private const int CvMSimulations = 10000;
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, double[]> CvMNullDistributions = new();
+    // Lazy で包み、並列に同じ n が要求されても帰無分布の生成は1回にする
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, Lazy<double[]>> CvMNullDistributions = new();
     
     /// <summary>
     /// Cramér-von Mises 検定の p 値（Case 0: 分布が完全に指定されている場合）
@@ -337,7 +313,7 @@ public class GoodnessOfFitTest
     /// </remarks>
     private static double CalculateCvMPValue(double W2, int n)
     {
-        var nullDistribution = CvMNullDistributions.GetOrAdd(n, size =>
+        var nullDistribution = CvMNullDistributions.GetOrAdd(n, size => new Lazy<double[]>(() =>
         {
             var random = new Random(20240601 + size);
             var sample = new double[size];
@@ -350,7 +326,7 @@ public class GoodnessOfFitTest
             }
             Array.Sort(statistics);
             return statistics;
-        });
+        })).Value;
         
         // 観測値以上になった割合（+1 補正）
         int index = Array.BinarySearch(nullDistribution, W2);
@@ -500,8 +476,12 @@ public class GoodnessOfFitTest
                 var simY = ParametricBootstrap.SimulateCumulative(model, tData, parameters, new Random(unchecked(baseSeed + iter * 7919)));
                 var p = refit(simY);
                 if (p == null) return;
-                var (ks, _) = KolmogorovSmirnovTest(model, tData, simY, p);
-                var (cvm, _) = CramerVonMisesTest(model, tData, simY, p);
+                // 統計量だけを計算する（p 値は観測値について1回求めれば足り、ここで求めると
+                // 反復ごとに異なる件数の帰無分布をシミュレーションしてしまう）
+                var u = TransformedBugTimes(model, tData, simY, p);
+                if (u == null) return;
+                double ks = KolmogorovSmirnovStatistic(u);
+                double cvm = CramerVonMisesStatistic(u);
                 Interlocked.Increment(ref valid);
                 if (ks >= observedKs) Interlocked.Increment(ref ksExceed);
                 if (cvm >= observedCvm) Interlocked.Increment(ref cvmExceed);

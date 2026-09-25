@@ -34,7 +34,7 @@ public class AsymptoticTotalBugsTests
 
         foreach (var p in TestHelpers.SampleParameterPoints(model, data))
         {
-            if (TestHelpers.UsesInfiniteEffort(model, p))
+            if (TestHelpers.UsesInfiniteEffort(model))
                 continue; // 別テストで検証
 
             double asymptote = model.GetAsymptoticTotalBugs(p);

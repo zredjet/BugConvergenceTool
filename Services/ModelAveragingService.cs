@@ -302,8 +302,10 @@ public class ModelAveragingService
     private static double TotalBugsVariance(
         FisherInformationService service, ReliabilityGrowthModelBase model, FittingResult result, double[] tData, double[] yData)
     {
-        // Fisher 情報行列は Poisson-NHPP の最尤推定値でのみ有効。τ は微分できない
-        if (result.LossFunctionUsed != "MLE" || model.ParameterNames.Any(n => n.StartsWith("τ")))
+        // Fisher 情報行列は発見数のみの Poisson-NHPP 尤度の最尤推定値でのみ有効（FRE・TEF は別の尤度）。τ は微分できない
+        if (result.LossFunctionUsed != "MLE"
+            || result.ComparisonGroup != ModelComparisonGroup.DetectionOnly
+            || model.ParameterNames.Any(n => n.StartsWith("τ")))
             return double.NaN;
         var fisher = service.CalculateNHPPStandardErrors(model, tData, yData, result.ParameterVector);
         if (!fisher.Success || fisher.CovarianceMatrix == null)
@@ -342,7 +344,7 @@ public class ModelAveragingService
                 if (!models.TryGetValue(result.ModelName, out var model))
                     continue;
                 
-                double day = PredictionIntervalService.DayForRatio(model, result.ParameterVector, ratio);
+                double day = model.DayForRatio(ratio, result.ParameterVector);
                 if (double.IsFinite(day))
                 {
                     weightedDay += weight * day;

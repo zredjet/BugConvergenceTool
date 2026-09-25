@@ -121,6 +121,16 @@ public class ModelFormulaTests
     }
 
     [Fact]
+    public void MultipleChangePoint_WithEqualChangePoints_KeepsLaterSegments()
+    {
+        // τ1 = τ2 = 10 のとき、長さ 0 の区間で打ち切らず 10〜20 日の区間（b3）も加算する
+        var model = new MultipleChangePointModel(2);
+        var p = new[] { 120.0, 0.05, 0.3, 0.1, 10.0, 10.0 };   // a, b1, b2, b3, τ1, τ2
+        double u = 0.05 * 10 + 0.1 * 10;
+        Assert.Equal(120 * (1 - Math.Exp(-u)), model.Calculate(20, p), 9);
+    }
+
+    [Fact]
     public void FixedTauWrapper_MatchesBaseModel()
     {
         var baseModel = new InflectionSChangePointModel();
@@ -154,6 +164,40 @@ public class ModelFormulaTests
         var cumulative = Enumerable.Range(1, 15).Select(i => 2.0 * i).ToArray();
         Assert.Equal(8.0, RatioProbe.Find(cumulative, 0.5));
         Assert.Equal(15.0, RatioProbe.Find(cumulative, 1.0));
+    }
+
+    [Fact]
+    public void ConvergencePrediction_WhenModelReachedButObservedNot_HasDayInsteadOfUndetermined()
+    {
+        // 指数型のデータで最後の 5 日だけ発見が止まったデータを SSE で推定すると、m(40) が観測累積を上回り、
+        // 95% 目標が「観測は未到達・モデル上は到達済み」になる。以前は到達日が null で「予測不可」と表示されていた
+        // （MLE では m(T) = 観測累積 が成り立つため、この状態は SSE や境界への張り付きで起きる）
+        var go = new ExponentialModel();
+        var p = new[] { 100.0, 0.08 };
+        var data = new BugConvergenceTool.Services.TestData { StartDate = new DateTime(2025, 1, 6) };
+        double prev = 0;
+        for (int i = 0; i < 40; i++)
+        {
+            double m = Math.Round(go.Calculate(i + 1, p));
+            data.Dates.Add(data.StartDate.Value.AddDays(i));
+            data.PlannedDaily.Add(0);
+            data.ActualDaily.Add(0);
+            data.BugsFoundDaily.Add(i >= 35 ? 0 : m - prev);
+            data.BugsFixedDaily.Add(0);
+            prev = m;
+        }
+
+        var result = new BugConvergenceTool.Services.ModelFitter(
+            data, BugConvergenceTool.Optimizers.OptimizerType.DifferentialEvolution, false, BugConvergenceTool.Services.LossType.Sse)
+            .FitModel(new ExponentialModel());
+        var p95 = result.ConvergencePredictions["95%発見"];
+
+        Assert.True(data.CurrentCumulativeBugs < result.EstimatedTotalBugs * 0.95, "前提: 観測は 95% 未到達");
+        Assert.True(result.PredictedValues[^1] >= result.EstimatedTotalBugs * 0.95, "前提: モデル上は到達済み");
+        Assert.False(p95.AlreadyReached);
+        Assert.NotNull(p95.PredictedDay);
+        Assert.True(p95.PredictedDay <= 40);
+        Assert.Equal(0, p95.RemainingDays);
     }
 
     private sealed class RatioProbe : ExponentialModel
