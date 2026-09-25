@@ -219,10 +219,14 @@ class Program
                     
                     // 適合度検定結果を表示
                     Console.WriteLine($"【適合度検定】{bestResult.GoodnessOfFit.OverallAssessment}");
-                    Console.WriteLine($"  χ²検定: χ²={bestResult.GoodnessOfFit.ChiSquareStatistic:F2} (df={bestResult.GoodnessOfFit.ChiSquareDegreesOfFreedom}, p={bestResult.GoodnessOfFit.ChiSquarePValue:F4})");
+                    Console.WriteLine(double.IsFinite(bestResult.GoodnessOfFit.ChiSquarePValue)
+                        ? $"  χ²検定: χ²={bestResult.GoodnessOfFit.ChiSquareStatistic:F2} (df={bestResult.GoodnessOfFit.ChiSquareDegreesOfFreedom}, p={bestResult.GoodnessOfFit.ChiSquarePValue:F4})"
+                        : $"  χ²検定: 自由度が残らないため検定できません（ビン数 {bestResult.GoodnessOfFit.NumberOfBins} ≤ パラメータ数）");
                     Console.WriteLine($"  KS検定: D={bestResult.GoodnessOfFit.KsStatistic:F4} (p={bestResult.GoodnessOfFit.KsPValue:F4})");
                     Console.WriteLine($"  CvM検定: W²={bestResult.GoodnessOfFit.CramerVonMisesStatistic:F4} (p={bestResult.GoodnessOfFit.CramerVonMisesPValue:F4})");
                     Console.WriteLine($"    （KS・CvM の p 値: {bestResult.GoodnessOfFit.EdfPValueMethod}）");
+                    if (!bestResult.GoodnessOfFit.EdfPValuesCalibrated)
+                        Console.WriteLine("    ※ KS・CvM は適合性の判定に使っていません（参考表示）");
                     Console.WriteLine();
                 }
                 catch (Exception ex)

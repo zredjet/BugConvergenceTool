@@ -43,6 +43,12 @@ public enum ResidualType
     Deviance,
     
     /// <summary>
+    /// ランダム化分位残差（増分ベース）: Φ⁻¹(u)、u ~ U(F(y-1), F(y))（F は Poisson(λ_i) の分布関数）
+    /// モデルが正しければ厳密に独立な標準正規分布に従う（Dunn &amp; Smyth 1996）
+    /// </summary>
+    RandomizedQuantile,
+    
+    /// <summary>
     /// 累積残差: e_i = Y_i - m(t_i)
     /// 累積バグ数の観測値とモデル予測値の差
     /// 注意: 累積データは自己相関を持つため、独立性検定（ラン検定等）の解釈に注意
@@ -630,16 +636,31 @@ public class ResidualAnalyzer
         double[] parameters,
         ResidualType type = ResidualType.Pearson)
     {
-        var residuals = CalculateResiduals(model, tData, yData, parameters, type);
-        
+        var residuals = type == ResidualType.RandomizedQuantile
+            ? CalculateRandomizedQuantileResiduals(ConvertToDailyData(yData), CalculateDailyExpected(model, tData, parameters))
+            : CalculateResiduals(model, tData, yData, parameters, type);
+        return Summarize(residuals, type);
+    }
+
+    /// <summary>
+    /// 残差の統計量・外れ値・ラン検定・系統的パターンをまとめる
+    /// </summary>
+    /// <remarks>
+    /// ランダム化分位残差はモデルが正しければ標準正規分布に従うので、外れ値は |r| &gt; 3 で判定する
+    /// （標準化して 2σ で判定すると、正しいモデルでも 1 点あたり 4.6% が外れ値になる）。
+    /// </remarks>
+    public ResidualAnalysisResult Summarize(double[] residuals, ResidualType type)
+    {
         // 基本統計量
         double mean = CalculateMean(residuals);
         double std = CalculateStandardDeviation(residuals, mean);
         double skewness = CalculateSkewness(residuals, mean, std);
         double kurtosis = CalculateKurtosis(residuals, mean, std);
         
-        // 外れ値検出（|残差| > 2σ）
-        var outliers = DetectOutliers(residuals, mean, std, threshold: 2.0);
+        // 外れ値検出（|残差| > 2σ。ランダム化分位残差は |r| > 3）
+        var outliers = type == ResidualType.RandomizedQuantile
+            ? DetectOutliers(residuals, 0, 1, threshold: 3.0)
+            : DetectOutliers(residuals, mean, std, threshold: 2.0);
         
         // ラン検定
         var runsTest = PerformRunsTest(residuals);

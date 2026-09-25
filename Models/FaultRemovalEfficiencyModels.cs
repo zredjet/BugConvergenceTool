@@ -91,6 +91,7 @@ public class ConstantFREModel : FaultRemovalEfficiencyModelBase
     public override string Formula => "m_d(t) = a(1-e^(-bt)), m_c(t) = η∫₀ᵗ m_d'(s)(1-e^(-(t-s)/D))ds";
     public override string Description => "一定の欠陥除去効率 η と平均修正遅れ D";
     public override string[] ParameterNames => new[] { "a", "b", "η", "D" };
+    public override int DetectionParameterCount => 2;   // a, b
     
     public override double CalculateDetected(double t, double[] p)
     {
@@ -159,6 +160,7 @@ public class LearningFREModel : FaultRemovalEfficiencyModelBase
     public override string Formula => "η(t) = η∞ - (η∞-η₀)e^(-λt), m_c(t) = ∫₀ᵗ η(s)m_d'(s)(1-e^(-(t-s)/D))ds";
     public override string Description => "学習効果で効率向上（平均修正遅れ D 付き）";
     public override string[] ParameterNames => new[] { "a", "b", "η₀", "η∞", "λ", "D" };
+    public override int DetectionParameterCount => 2;   // a, b
     
     public override double CalculateDetected(double t, double[] p)
     {
@@ -231,6 +233,7 @@ public class LogisticFRFModel : FaultRemovalEfficiencyModelBase
     public override string Formula => "FRF(t) = 1/(1+β·e^(-γt))";
     public override string Description => "S字型の欠陥削減係数";
     public override string[] ParameterNames => new[] { "a", "b", "β", "γ" };
+    public override int DetectionParameterCount => 2;   // a, b
     
     public override double CalculateDetected(double t, double[] p)
     {
@@ -290,6 +293,7 @@ public class FREChangePointModel : FaultRemovalEfficiencyModelBase
     public override string Formula => "m_d = a(1-e^(-u(t))), u(t)=b₁t [t≤τ], b₁τ+b₂(t-τ) [t>τ]; m_c = η∫₀ᵗ m_d'(s)(1-e^(-(t-s)/D))ds";
     public override string Description => "欠陥除去効率 η・平均修正遅れ D と検出率の変化点を組み合わせたモデル";
     public override string[] ParameterNames => new[] { "a", "b₁", "b₂", "η", "D", "τ" };
+    public override int DetectionParameterCount => 4;   // a, b₁, b₂, τ
     
     public override double CalculateDetected(double t, double[] p)
     {

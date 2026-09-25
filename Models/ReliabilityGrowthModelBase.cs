@@ -237,6 +237,15 @@ public abstract class ReliabilityGrowthModelBase
     }
 
     /// <summary>
+    /// 発見数の平均値関数 m(t)（<see cref="Calculate"/>）に効くパラメータの数
+    /// </summary>
+    /// <remarks>
+    /// 発見数だけを使う検定（χ² 適合度検定など）の自由度に使う。FRE モデルの η・D などの修正数にしか効かない
+    /// パラメータは含めない。
+    /// </remarks>
+    public virtual int DetectionParameterCount => ParameterNames.Length;
+
+    /// <summary>
     /// m(∞)（<see cref="GetAsymptoticTotalBugs"/>）の表示名
     /// </summary>
     public virtual string TotalBugsLabel => "推定潜在バグ総数";

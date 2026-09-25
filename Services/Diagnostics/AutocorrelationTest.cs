@@ -206,12 +206,11 @@ public class AutocorrelationTest
         // Durbin-Watsonの解釈
         string dwInterpretation = InterpretDurbinWatson(dw);
         
-        // 有意な自己相関の判定
-        // Ljung-Box p値が有意、または DW が閾値外、または有意なラグが存在
-        bool hasSignificant = pValue < SIGNIFICANCE_LEVEL || 
-                             dw < DW_LOWER_THRESHOLD || 
-                             dw > DW_UPPER_THRESHOLD ||
-                             significantLags.Length > 0;
+        // 有意な自己相関の判定は Ljung-Box 検定（全ラグをまとめた1つの検定）だけで行う。
+        // 以前は「Ljung-Box が有意、または DW が 1.5〜2.5 の外、または 10 ラグのどれかが ±1.96/√n の外」の OR で、
+        // 正しいモデルでも 28〜35% を自己相関ありと判定していた（10 ラグの個別判定だけで約 40% になる）。
+        // DW と各ラグの ACF は参考として表示する
+        bool hasSignificant = pValue < SIGNIFICANCE_LEVEL;
         
         // 総合的な解釈を生成
         string interpretation = GenerateInterpretation(dw, pValue, significantLags, n);
@@ -280,9 +279,10 @@ public class AutocorrelationTest
             issues.Add($"ラグ {lags} で有意な自己相関");
         }
         
-        if (issues.Count == 0)
+        if (ljungBoxPValue >= SIGNIFICANCE_LEVEL)
         {
-            return "残差に有意な自己相関は検出されませんでした。モデルは時間的な依存構造を適切に捉えています。";
+            string reference = issues.Count > 0 ? $"（参考: {string.Join("、", issues)}。判定は Ljung-Box 検定で行います）" : "";
+            return "残差に有意な自己相関は検出されませんでした。モデルは時間的な依存構造を適切に捉えています。" + reference;
         }
         
         string summary = string.Join("、", issues);
