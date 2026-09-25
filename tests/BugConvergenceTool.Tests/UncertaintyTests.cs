@@ -144,3 +144,60 @@ public class UncertaintyTests
         Assert.Contains("Poisson整合性診断", DiagnosticReportGenerator.FormatReport(report));
     }
 }
+
+/// <summary>
+/// --ci（パラメトリック・ブートストラップによる信頼区間）の検証
+/// </summary>
+public class ConfidenceBandTests
+{
+    [Fact]
+    public void ConfidenceBand_CoversObservedAndFuturePeriod_AndContainsEstimate()
+    {
+        var data = TestHelpers.CreateGoelOkumotoData();
+        var fitter = new ModelFitter(data);
+        var result = fitter.FitModel(new ExponentialModel());
+        var boot = ParametricBootstrap.Run(result.Model!, data.GetTimeData(), result.ParameterVector,
+            fitter.CreateRefitFunction(result.Model!), 60, seed: 2);
+        var times = Enumerable.Range(1, 80).Select(d => (double)d).ToArray();
+
+        var band = new ConfidenceIntervalService().Calculate(result.Model!, result.ParameterVector, boot, times);
+
+        Assert.Equal(80, band.Times.Length);
+        Assert.Equal(boot.Succeeded, band.Succeeded);
+        for (int i = 0; i < 80; i++)
+        {
+            Assert.True(band.Lower[i] <= band.Upper[i]);
+            Assert.True(band.Upper[i] - band.Lower[i] > 0, $"t={times[i]} で幅が 0");
+        }
+        Assert.InRange(band.TotalBugs!.Estimate, band.TotalBugs.Lower, band.TotalBugs.Upper);
+        Assert.Equal(3, band.Milestones.Count);
+    }
+
+    [Fact]
+    public void ConfidenceBand_ForTefModel_HasPositiveWidth()
+    {
+        // 以前は TEF モデルの再推定に工数データが渡されず全反復が失敗し、θ̂ で置き換えられて幅 0 の区間になっていた
+        var data = TestHelpers.CreateGoelOkumotoData();
+        var fitter = new ModelFitter(data);
+        var result = fitter.FitModel(new TEFExponentialModel(new WeibullTEF()));
+        var boot = ParametricBootstrap.Run(result.Model!, data.GetTimeData(), result.ParameterVector,
+            fitter.CreateRefitFunction(result.Model!), 30, seed: 4);
+
+        var band = new ConfidenceIntervalService().Calculate(result.Model!, result.ParameterVector, boot, data.GetTimeData());
+
+        Assert.True(band.Succeeded >= 25, $"成功 {band.Succeeded}/30");
+        Assert.True(band.Upper[^1] - band.Lower[^1] > 1);
+    }
+
+    [Fact]
+    public void ConfidenceBand_WithNoSuccessfulReplicate_ReportsFailure()
+    {
+        var data = TestHelpers.CreateGoelOkumotoData();
+        var boot = ParametricBootstrap.Run(new ExponentialModel(), data.GetTimeData(), new[] { 150.0, 0.05 }, _ => null, 10, seed: 1);
+
+        var band = new ConfidenceIntervalService().Calculate(new ExponentialModel(), new[] { 150.0, 0.05 }, boot, data.GetTimeData());
+
+        Assert.Equal(0, band.Succeeded);
+        Assert.NotEmpty(band.Warnings);
+    }
+}

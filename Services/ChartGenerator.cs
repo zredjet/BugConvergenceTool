@@ -43,7 +43,7 @@ public class ChartGenerator
         var plt = new Plot();
         
         // プロットのフォントを日本語対応フォントに設定
-        plt.Font.Set("Yu Gothic UI"); // または "Meiryo", "MS Gothic" など
+        plt.Font.Set(JapaneseFont);
         
         var days = Enumerable.Range(1, _testData.DayCount).Select(i => (double)i).ToArray();
         var planned = _testData.GetCumulativePlanned();
@@ -80,7 +80,7 @@ public class ChartGenerator
         var plt = new Plot();
         
         // プロットのフォントを日本語対応フォントに設定
-        plt.Font.Set("Yu Gothic UI"); // または "Meiryo", "MS Gothic" など
+        plt.Font.Set(JapaneseFont);
         
         var days = Enumerable.Range(1, _testData.DayCount).Select(i => (double)i).ToArray();
         var found = _testData.GetCumulativeBugsFound();
@@ -115,7 +115,7 @@ public class ChartGenerator
         var plt = new Plot();
         
         // プロットのフォントを日本語対応フォントに設定
-        plt.Font.Set("Yu Gothic UI"); // または "Meiryo", "MS Gothic" など
+        plt.Font.Set(JapaneseFont);
         
         var days = Enumerable.Range(1, _testData.DayCount).Select(i => (double)i).ToArray();
         var remaining = _testData.GetRemainingBugs();
@@ -143,7 +143,7 @@ public class ChartGenerator
         var plt = new Plot();
         
         // プロットのフォントを日本語対応フォントに設定
-        plt.Font.Set("Yu Gothic UI"); // または "Meiryo", "MS Gothic" など
+        plt.Font.Set(JapaneseFont);
         
         var days = Enumerable.Range(1, _testData.DayCount).Select(i => (double)i).ToArray();
         var found = _testData.GetCumulativeBugsFound();
@@ -185,58 +185,45 @@ public class ChartGenerator
         var plt = new Plot();
         
         // プロットのフォントを日本語対応フォントに設定
-        plt.Font.Set("Yu Gothic UI"); // または "Meiryo", "MS Gothic" など
+        plt.Font.Set(JapaneseFont);
         
         int n = _testData.DayCount;
-        int predDays = (int)(n * 2); // 2倍の期間まで予測
+        var model = GetModelFromResult(result);
+        var band = result.ConfidenceBand?.Succeeded > 0 ? result.ConfidenceBand : null;
+        var pi = result.PredictionInterval?.Succeeded > 0 ? result.PredictionInterval : null;
         
         // 実績データ
         var actualDays = Enumerable.Range(1, n).Select(i => (double)i).ToArray();
         var actualBugs = _testData.GetCumulativeBugsFound();
         
-        // X軸は PredictionTimes を優先して使用（信頼区間と合わせるため）
-        double[] xAxis;
-        double[] predBugs;
-        var model = GetModelFromResult(result);
+        // 予測曲線は観測期間の2倍まで（信頼区間があればその期間）描く
+        double[] xAxis = band?.Times ?? Enumerable.Range(1, n * 2).Select(i => (double)i).ToArray();
+        double[] predBugs = xAxis.Select(t => model.Calculate(t, result.ParameterVector)).ToArray();
         
-        if (result.PredictionTimes != null && result.PredictionTimes.Length > 0)
+        // 1. 予測区間帯（将来の累積発見数。パラメータの不確実性 + Poisson 変動）
+        if (pi != null)
         {
-            // FittingResult に格納された予測時刻を使用
-            xAxis = result.PredictionTimes;
-            predBugs = result.PredictedValues;
-        }
-        else
-        {
-            // 従来の方式：2倍の期間まで予測
-            xAxis = Enumerable.Range(1, predDays).Select(i => (double)i).ToArray();
-            var parameters = result.ParameterVector;
-            predBugs = xAxis.Select(t => model.Calculate(t, parameters)).ToArray();
+            var piFill = plt.Add.FillY(pi.FutureTimes, pi.Lower, pi.Upper);
+            piFill.FillColor = Colors.Orange.WithAlpha(0.15);
+            piFill.LegendText = $"{pi.ConfidenceLevel:P0}予測区間（観測済み件数を起点とした将来の累積発見数）";
         }
         
-        // 1. 信頼区間帯（ある場合）
-        if (result.LowerConfidenceBounds != null &&
-            result.UpperConfidenceBounds != null &&
-            result.LowerConfidenceBounds.Length == xAxis.Length)
+        // 2. 信頼区間帯（m(t)。パラメータの不確実性のみ）
+        if (band != null)
         {
-            var fill = plt.Add.FillY(
-                xAxis,
-                result.LowerConfidenceBounds,
-                result.UpperConfidenceBounds
-            );
-            
-            // 半透明の赤色で塗りつぶし（アルファ値 0-1 の範囲）
+            var fill = plt.Add.FillY(band.Times, band.Lower, band.Upper);
             fill.FillColor = Colors.Red.WithAlpha(0.2);
-            fill.LegendText = "95%予測区間";
+            fill.LegendText = $"{band.ConfidenceLevel:P0}信頼区間（期待値 m(t)）";
         }
         
-        // 2. 実績データ
+        // 3. 実績データ
         var actualPlot = plt.Add.Scatter(actualDays, actualBugs);
         actualPlot.LegendText = "実績（累積バグ）";
         actualPlot.LineWidth = 0;
         actualPlot.MarkerSize = 8;
         actualPlot.Color = Colors.Blue;
         
-        // 3. 予測曲線
+        // 4. 予測曲線
         var predPlot = plt.Add.Scatter(xAxis, predBugs);
         predPlot.LegendText = $"予測曲線（{result.ModelName}）";
         predPlot.LineWidth = 2;
@@ -244,7 +231,7 @@ public class ChartGenerator
         predPlot.Color = Colors.Red;
         predPlot.LineStyle.Pattern = LinePattern.Dashed;
         
-        // 4. 潜在バグ総数ライン
+        // 5. 潜在バグ総数ライン
         double totalBugs = result.EstimatedTotalBugs;
         var totalLine = plt.Add.HorizontalLine(totalBugs);
         totalLine.LegendText = $"推定潜在バグ総数 ({totalBugs:F0})";
@@ -258,17 +245,22 @@ public class ChartGenerator
         plt.Legend.IsVisible = true;
         plt.Legend.Alignment = Alignment.LowerRight;
         
-        // 注釈（信頼区間がある場合はその旨を追記）
         string annotation = $"R² = {result.R2:F4}\n推定残バグ: {totalBugs - actualBugs.Last():F1}";
-        if (result.LowerConfidenceBounds != null)
+        if (band?.TotalBugs != null)
         {
-            annotation += "\n（95%信頼区間付き）";
+            annotation += $"\n潜在バグ総数 {band.ConfidenceLevel:P0}区間: [{band.TotalBugs.Lower:F0}, {band.TotalBugs.Upper:F0}]";
         }
         plt.Add.Annotation(annotation, Alignment.UpperLeft);
         
         plt.SavePng(filePath, _width, _height);
     }
 
+    /// <summary>
+    /// 日本語を表示できるインストール済みフォント（OS によって異なるため文字から検出する。
+    /// 以前は Windows 専用の "Yu Gothic UI" に固定していたため、他の OS では文字化けしていた）
+    /// </summary>
+    private static readonly string JapaneseFont = Fonts.Detect("累積バグ数の予測区間");
+    
     private static ReliabilityGrowthModelBase GetModelFromResult(FittingResult result)
     {
         // 推定に使ったモデルのインスタンス（TEF の工数データ等を保持）

@@ -352,6 +352,26 @@ public class ReportGenerator
     /// </summary>
     private void AppendUncertainty(StringBuilder sb, FittingResult bestResult)
     {
+        var band = bestResult.ConfidenceBand;
+        if (band != null)
+        {
+            sb.AppendLine("--------------------------------------------------------------------------------");
+            sb.AppendLine($"【信頼区間（パラメトリック・ブートストラップ、{band.ConfidenceLevel:P0}）】");
+            sb.AppendLine("--------------------------------------------------------------------------------");
+            sb.AppendLine();
+            sb.AppendLine($"  再推定の成功: {band.Succeeded}/{band.Requested}（失敗した反復は除外）");
+            foreach (var warning in band.Warnings)
+                sb.AppendLine($"  注意: {warning}");
+            if (band.Succeeded > 0)
+            {
+                if (band.TotalBugs != null)
+                    sb.AppendLine($"  推定潜在バグ総数:   {band.TotalBugs.Estimate:F1} 件  [{band.TotalBugs.Lower:F1}, {band.TotalBugs.Upper:F1}]");
+                AppendMilestones(sb, band.Milestones);
+                sb.AppendLine("  ※ パラメータ推定の不確実性のみ。m(t) の区間はグラフ（reliability_growth.png）に描画しています。");
+            }
+            sb.AppendLine();
+        }
+        
         var fisher = bestResult.FisherInformation;
         if (fisher != null && fisher.Success)
         {
@@ -384,18 +404,14 @@ public class ReportGenerator
                 sb.AppendLine($"  注意: {warning}");
             if (pi.Succeeded > 0)
             {
-                if (pi.TotalBugs != null)
+                // 総数・収束日の区間は信頼区間と同じ値なので、信頼区間を出力済みなら省略する
+                bool shownInBand = band?.Succeeded > 0;
+                if (pi.TotalBugs != null && !shownInBand)
                     sb.AppendLine($"  推定潜在バグ総数:   {pi.TotalBugs.Estimate:F1} 件  [{pi.TotalBugs.Lower:F1}, {pi.TotalBugs.Upper:F1}]（信頼区間）");
                 if (pi.RemainingBugs != null)
                     sb.AppendLine($"  今後発見される件数: {pi.RemainingBugs.Estimate:F1} 件  [{pi.RemainingBugs.Lower:F0}, {pi.RemainingBugs.Upper:F0}]（予測区間）");
-                sb.AppendLine();
-                sb.AppendLine("  収束予測日の区間:");
-                foreach (var m in pi.Milestones)
-                {
-                    string FormatDay(double d) => double.IsPositiveInfinity(d) ? "到達せず" : $"{d:F1}日目";
-                    string note = m.UnreachableFraction > 0 ? $"（{m.UnreachableFraction:P0} の反復で到達せず）" : "";
-                    sb.AppendLine($"    {m.Ratio * 100:F0}%発見: {FormatDay(m.EstimateDay)}  [{FormatDay(m.LowerDay)}, {FormatDay(m.UpperDay)}]{note}");
-                }
+                if (!shownInBand)
+                    AppendMilestones(sb, pi.Milestones);
                 sb.AppendLine();
                 sb.AppendLine("  将来の累積発見数（予測区間）:");
                 sb.AppendLine($"    {"日",6} {"日付",12} {"予測",8} {"下限",8} {"上限",8}");
@@ -412,6 +428,18 @@ public class ReportGenerator
     /// <summary>
     /// ホールドアウト検証結果をレポートに追加
     /// </summary>
+    private static void AppendMilestones(StringBuilder sb, IEnumerable<MilestoneInterval> milestones)
+    {
+        sb.AppendLine();
+        sb.AppendLine("  収束予測日の区間:");
+        foreach (var m in milestones)
+        {
+            string FormatDay(double d) => double.IsPositiveInfinity(d) ? "到達せず" : $"{d:F1}日目";
+            string note = m.UnreachableFraction > 0 ? $"（{m.UnreachableFraction:P0} の反復で到達せず）" : "";
+            sb.AppendLine($"    {m.Ratio * 100:F0}%発見: {FormatDay(m.EstimateDay)}  [{FormatDay(m.LowerDay)}, {FormatDay(m.UpperDay)}]{note}");
+        }
+    }
+    
     private void AppendHoldoutResults(StringBuilder sb, List<FittingResult> results)
     {
         var resultsWithHoldout = results.Where(r => r.Success && r.Holdout != null).ToList();

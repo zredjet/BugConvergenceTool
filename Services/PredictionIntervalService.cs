@@ -74,7 +74,8 @@ public class PredictionIntervalService
     /// <summary>マイルストーンを探す最大日数</summary>
     private const double MaxSearchDay = 1e5;
 
-    private static readonly double[] MilestoneRatios = { 0.90, 0.95, 0.99 };
+    /// <summary>区間を求める収束マイルストーン（発見率）</summary>
+    public static readonly double[] MilestoneRatios = { 0.90, 0.95, 0.99 };
 
     public PredictionIntervalResult Calculate(
         ReliabilityGrowthModelBase model,
@@ -169,7 +170,10 @@ public class PredictionIntervalService
         };
     }
 
-    private static MilestoneInterval CalculateMilestone(
+    /// <summary>
+    /// ブートストラップの θ* から、発見率 ratio に到達する日の区間を求める
+    /// </summary>
+    public static MilestoneInterval CalculateMilestone(
         ReliabilityGrowthModelBase model, double[] estimate, IReadOnlyList<double[]> replicates,
         double ratio, double qLow, double qHigh)
     {

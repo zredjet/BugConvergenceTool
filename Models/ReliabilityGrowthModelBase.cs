@@ -105,9 +105,10 @@ public class FittingResult
     // 信頼区間計算用：予測時刻（PredictedValues に対応する X 軸）
     public double[] PredictionTimes { get; set; } = Array.Empty<double>();
     
-    // 95%信頼区間（ブートストラップ法で計算）
-    public double[]? LowerConfidenceBounds { get; set; }
-    public double[]? UpperConfidenceBounds { get; set; }
+    /// <summary>
+    /// ブートストラップによる m(t)・総数・収束日の信頼区間（--ci の場合）
+    /// </summary>
+    public Services.ConfidenceBandResult? ConfidenceBand { get; set; }
     
     // ホールドアウト検証結果（オプション）
     // 検証用パラメータは訓練区間のみで別途推定したもの。最終結果（Parameters・AIC・収束予測）は全データで推定する。

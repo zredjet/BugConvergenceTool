@@ -161,59 +161,15 @@ class Program
         var tData = testData.GetTimeData();
         var yData = testData.GetCumulativeBugsFound();
         
-        // 2.5. 信頼区間の計算（オプション指定時）
-        if (options.CalculateConfidenceInterval)
+        // 2.5. 信頼区間・予測区間（パラメトリック・ブートストラップは両者で共有する）
+        if (options.CalculateConfidenceInterval || options.CalculatePredictionInterval)
         {
-            // 設定から反復回数を取得（CLIオプションで上書き可能）
-            var bootstrapSettings = ConfigurationService.Current.Bootstrap;
-            int iterations = options.BootstrapIterations > 0 
-                ? options.BootstrapIterations 
-                : bootstrapSettings.Iterations;
-            
-            // CLIで指定された場合は設定を上書き
-            if (options.BootstrapIterations > 0)
-            {
-                bootstrapSettings = new BootstrapSettings
-                {
-                    Iterations = iterations,
-                    ConfidenceLevel = bootstrapSettings.ConfidenceLevel,
-                    OptimizerMaxIterations = bootstrapSettings.OptimizerMaxIterations,
-                    OptimizerTolerance = bootstrapSettings.OptimizerTolerance,
-                    SSEThresholdMultiplier = bootstrapSettings.SSEThresholdMultiplier
-                };
-            }
-            
-            Console.WriteLine($"{bootstrapSettings.ConfidenceLevel * 100:F0}%信頼区間をブートストラップで計算中（{iterations}回）...");
-            
-            var ciService = new ConfidenceIntervalService(bootstrapSettings, options.Verbose);
-            
-            try
-            {
-                ciService.CalculateIntervals(bestModel, tData, yData, bestResult);
-                Console.WriteLine("  信頼区間の計算完了");
-            }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"  信頼区間の計算に失敗: {ex.Message}");
-                Console.ResetColor();
-            }
-            
-            // Fisher 情報行列による漸近信頼区間（Poisson-NHPP の最尤推定値でのみ有効）
-            if (bestResult.LossFunctionUsed == "MLE")
-            {
-                CalculateFisherIntervals(bestResult, tData, yData, bootstrapSettings.ConfidenceLevel);
-            }
-        }
-        
-        // 2.6. 予測区間の計算（オプション指定時）
-        if (options.CalculatePredictionInterval)
-        {
-            CalculatePredictionIntervals(options, fitter, bestResult, tData, yData, testData.DayCount);
+            CalculateIntervals(options, fitter, bestResult, tData, yData, testData.DayCount);
         }
         
         // 3. 結果表示
         PrintResults(results, bestResult, testData, options.Verbose);
+        PrintConfidenceBand(bestResult);
         PrintFisherIntervals(bestResult);
         PrintPredictionIntervals(bestResult, testData);
         
@@ -596,31 +552,88 @@ class Program
     }
     
     /// <summary>
-    /// パラメトリック・ブートストラップで予測区間を計算
+    /// 信頼区間（--ci）と予測区間（--pi）を計算する。パラメトリック・ブートストラップは1回だけ実行して共有する
     /// </summary>
-    static void CalculatePredictionIntervals(
+    static void CalculateIntervals(
         CommandOptions options, ModelFitter fitter, FittingResult bestResult, double[] tData, double[] yData, int dayCount)
     {
-        if (bestResult.ComparisonGroup != ModelComparisonGroup.DetectionOnly)
-        {
-            Console.WriteLine("  予測区間: 修正数・工数データを含むモデルには対応していないため省略します。");
-            return;
-        }
-        
         var bootstrapSettings = ConfigurationService.Current.Bootstrap;
         int iterations = options.BootstrapIterations > 0 ? options.BootstrapIterations : bootstrapSettings.Iterations;
         double level = bootstrapSettings.ConfidenceLevel;
-        Console.WriteLine($"{level * 100:F0}%予測区間をパラメトリック・ブートストラップで計算中（{iterations}回）...");
-        
         var model = bestResult.Model!;
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var bootstrap = ParametricBootstrap.Run(model, tData, bestResult.ParameterVector, fitter.CreateRefitFunction(model), iterations);
         
-        // 予測期間: 観測期間と同じ長さ（14〜180日）
-        int horizon = Math.Clamp(dayCount, 14, 180);
-        bestResult.PredictionInterval = new PredictionIntervalService().Calculate(
-            model, tData, yData, bestResult.ParameterVector, bootstrap, horizon, level);
-        Console.WriteLine($"  予測区間の計算完了（再推定の成功 {bootstrap.Succeeded}/{bootstrap.Requested}、{stopwatch.Elapsed.TotalSeconds:F1}秒）");
+        // 工数データ（TEF）は外生の説明変数なので固定したまま発見数だけを再生成できるが、
+        // 修正数（FRE）は発見数と同時に推定するため、発見数だけの再生成では整合しない
+        if (bestResult.ComparisonGroup != ModelComparisonGroup.DetectionAndCorrection)
+        {
+            Console.WriteLine($"パラメトリック・ブートストラップで{level * 100:F0}%区間を計算中（{iterations}回）...");
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var bootstrap = ParametricBootstrap.Run(
+                model, tData, bestResult.ParameterVector, fitter.CreateRefitFunction(model), iterations, bootstrapSettings.RandomSeed);
+            Console.WriteLine($"  再推定の成功 {bootstrap.Succeeded}/{bootstrap.Requested}（{stopwatch.Elapsed.TotalSeconds:F1}秒）");
+            
+            // 予測期間: 観測期間と同じ長さ（14〜180日）
+            int horizon = Math.Clamp(dayCount, 14, 180);
+            
+            if (options.CalculateConfidenceInterval)
+            {
+                var times = Enumerable.Range(1, dayCount + horizon).Select(d => (double)d).ToArray();
+                bestResult.ConfidenceBand = new ConfidenceIntervalService().Calculate(
+                    model, bestResult.ParameterVector, bootstrap, times, level);
+            }
+            if (options.CalculatePredictionInterval)
+            {
+                bestResult.PredictionInterval = new PredictionIntervalService().Calculate(
+                    model, tData, yData, bestResult.ParameterVector, bootstrap, horizon, level, bootstrapSettings.RandomSeed);
+            }
+        }
+        else
+        {
+            Console.WriteLine("  ブートストラップ区間: 修正数データを同時に推定する FRE モデルには対応していないため省略します。");
+        }
+        
+        // Fisher 情報行列による漸近信頼区間（Poisson-NHPP の最尤推定値でのみ有効）
+        if (options.CalculateConfidenceInterval && bestResult.LossFunctionUsed == "MLE")
+        {
+            CalculateFisherIntervals(bestResult, tData, yData, level);
+        }
+    }
+    
+    /// <summary>
+    /// ブートストラップによる信頼区間を表示
+    /// </summary>
+    static void PrintConfidenceBand(FittingResult bestResult)
+    {
+        var band = bestResult.ConfidenceBand;
+        if (band == null) return;
+        
+        Console.WriteLine($"\n=== 信頼区間（パラメトリック・ブートストラップ、{band.ConfidenceLevel:P0}、再推定の成功 {band.Succeeded}/{band.Requested}）===\n");
+        foreach (var warning in band.Warnings)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"  注意: {warning}");
+            Console.ResetColor();
+        }
+        if (band.Succeeded == 0) return;
+        
+        if (band.TotalBugs != null)
+            Console.WriteLine($"  推定潜在バグ総数: {band.TotalBugs.Estimate:F1} 件  [{band.TotalBugs.Lower:F1}, {band.TotalBugs.Upper:F1}]");
+        PrintMilestones(band.Milestones);
+        Console.WriteLine("  ※ パラメータ推定の不確実性のみ。将来の観測値のばらつきを含む区間は --pi で計算します。");
+    }
+    
+    /// <summary>
+    /// 収束マイルストーン到達日の区間を表示
+    /// </summary>
+    static void PrintMilestones(IEnumerable<MilestoneInterval> milestones)
+    {
+        Console.WriteLine("\n  収束予測日の区間:");
+        foreach (var m in milestones)
+        {
+            string FormatDay(double d) => double.IsPositiveInfinity(d) ? "到達せず" : $"{d:F1}日目";
+            string note = m.UnreachableFraction > 0 ? $"（{m.UnreachableFraction:P0} の反復で到達せず）" : "";
+            Console.WriteLine($"    {m.Ratio * 100:F0}%発見: {FormatDay(m.EstimateDay)}  [{FormatDay(m.LowerDay)}, {FormatDay(m.UpperDay)}]{note}");
+        }
     }
     
     /// <summary>
@@ -661,18 +674,14 @@ class Program
         }
         if (pi.Succeeded == 0) return;
         
-        if (pi.TotalBugs != null)
+        // 総数・収束日の区間は --ci と同じ値になるため、--ci の場合はそちらに表示する
+        bool shownInConfidenceBand = bestResult.ConfidenceBand?.Succeeded > 0;
+        if (pi.TotalBugs != null && !shownInConfidenceBand)
             Console.WriteLine($"  推定潜在バグ総数: {pi.TotalBugs.Estimate:F1} 件  [{pi.TotalBugs.Lower:F1}, {pi.TotalBugs.Upper:F1}]（信頼区間）");
         if (pi.RemainingBugs != null)
             Console.WriteLine($"  今後発見される件数: {pi.RemainingBugs.Estimate:F1} 件  [{pi.RemainingBugs.Lower:F0}, {pi.RemainingBugs.Upper:F0}]（予測区間）");
-        
-        Console.WriteLine("\n  収束予測日の区間:");
-        foreach (var m in pi.Milestones)
-        {
-            string FormatDay(double d) => double.IsPositiveInfinity(d) ? "到達せず" : $"{d:F1}日目";
-            string note = m.UnreachableFraction > 0 ? $"（{m.UnreachableFraction:P0} の反復で到達せず）" : "";
-            Console.WriteLine($"    {m.Ratio * 100:F0}%発見: {FormatDay(m.EstimateDay)}  [{FormatDay(m.LowerDay)}, {FormatDay(m.UpperDay)}]{note}");
-        }
+        if (!shownInConfidenceBand)
+            PrintMilestones(pi.Milestones);
         
         Console.WriteLine("\n  将来の累積発見数（予測区間）:");
         Console.WriteLine($"    {"日",6} {"日付",12} {"予測",8} {"下限",8} {"上限",8}");
